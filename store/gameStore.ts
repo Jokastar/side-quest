@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Quest } from '../types/database';
+import type { QuestWithCoords } from '../hooks/useNearbyQuests';
 
 interface LocationCoords {
   latitude: number;
@@ -12,11 +12,11 @@ interface GameState {
   setUserLocation: (location: LocationCoords) => void;
 
   // Quests
-  nearbyQuests: Quest[];
-  activeQuest: Quest | null;
+  nearbyQuests: QuestWithCoords[];
+  activeQuest: QuestWithCoords | null;
   completedQuestIds: string[];
-  setNearbyQuests: (quests: Quest[]) => void;
-  setActiveQuest: (quest: Quest | null) => void;
+  setNearbyQuests: (quests: QuestWithCoords[]) => void;
+  setActiveQuest: (quest: QuestWithCoords | null) => void;
   markQuestCompleted: (questId: string) => void;
   isQuestCompleted: (questId: string) => boolean;
 }
