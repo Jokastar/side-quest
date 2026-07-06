@@ -1,130 +1,270 @@
-import { useEffect, useRef, Fragment } from 'react';
-import { View, Text, TouchableOpacity, ActivityIndicator } from 'react-native';
-import MapView, { Marker, Circle, PROVIDER_DEFAULT } from 'react-native-maps';
-import * as Location from 'expo-location';
+import { useEffect, useState } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, SafeAreaView, ActivityIndicator } from 'react-native';
+import { useRouter } from 'expo-router';
 import { useGameStore } from '../store/gameStore';
-import { useNearbyQuests } from '../hooks/useNearbyQuests';
-import { colors } from '../constants/colors';
-import { config } from '../constants/config';
+import { useDataSync } from '../hooks/useDataSync';
+import { useSpin } from '../hooks/useSpin';
+import { useUserLocation } from '../hooks/useUserLocation';
+import { supabase } from '../lib/supabase';
+import SlotMachine, { SpinMode } from '../components/SlotMachine';
+import VenueDetailModal from '../components/VenueDetailModal';
+import type { ReelItem } from '../components/Reel';
+import type { Venue, SpinEvent } from '../types/database';
 
-export default function MapScreen() {
-  const mapRef = useRef<MapView>(null);
-  const { userLocation, setUserLocation, activeQuest, setActiveQuest } = useGameStore();
-  const { quests, isLoading, error: questError } = useNearbyQuests();
+// ── Détection automatique du mode selon l'heure ──────────────
+function detectMode(): SpinMode {
+  const h = new Date().getHours();
+  if (h >= 10 && h < 14) return 'midi';
+  if (h >= 14 && h < 19) return 'journee';
+  return 'soiree';
+}
 
+// Convertit un Venue ou SpinEvent en ReelItem (format attendu par Reel)
+function toReelItem(item: Venue | SpinEvent | null): ReelItem | null {
+  if (!item) return null;
+  return {
+    id: item.id,
+    name: 'name' in item ? item.name : item.title,
+    photo_url: item.photo_url ?? null,
+  };
+}
+
+const MODES: { key: SpinMode; label: string; emoji: string }[] = [
+  { key: 'midi',    label: 'Midi',    emoji: '☀️' },
+  { key: 'journee', label: 'Journée', emoji: '🌤️' },
+  { key: 'soiree',  label: 'Soirée',  emoji: '🌙' },
+];
+
+export default function HomeScreen() {
+  const router = useRouter();
+  const { syncing, ready } = useDataSync();
+  const { spin, error: spinError } = useSpin();
+  useUserLocation();
+  const { stage, reelResults, resetEscapade, goToPlan } = useGameStore();
+
+  const [mode, setMode] = useState<SpinMode>(detectMode());
+  const [isSpinning, setIsSpinning] = useState(false);
+  const [detailItem, setDetailItem] = useState<Venue | SpinEvent | null>(null);
+  const [candidates, setCandidates] = useState<{
+    lieu: ReelItem[];
+    table: ReelItem[];
+    sortie: ReelItem[];
+  }>({ lieu: [], table: [], sortie: [] });
+
+  // Charge les candidats depuis Supabase pour peupler les reels pendant le spin
   useEffect(() => {
-    let subscription: Location.LocationSubscription;
+    if (!ready) return;
+    loadCandidates();
+  }, [ready, mode]);
 
-    (async () => {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') return;
+  async function loadCandidates() {
+    const now = new Date().toISOString();
+    const in48h = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
 
-      // Get an immediate fix so the map shows without waiting for movement
-      const initial = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
-      setUserLocation({ latitude: initial.coords.latitude, longitude: initial.coords.longitude });
+    const [venuesRes, eventsRes] = await Promise.all([
+      supabase.from('venues').select('id, name, photo_url, category').eq('is_active', true),
+      supabase.from('events').select('id, title, photo_url, category')
+        .lte('start_date', in48h)
+        .or(`end_date.gt.${now},end_date.is.null`),
+    ]);
 
-      subscription = await Location.watchPositionAsync(
-        {
-          accuracy: config.location.accuracy,
-          distanceInterval: config.location.distanceInterval,
-          timeInterval: config.location.timeInterval,
-        },
-        (loc) => {
-          const coords = {
-            latitude: loc.coords.latitude,
-            longitude: loc.coords.longitude,
-          };
-          setUserLocation(coords);
-          mapRef.current?.animateToRegion({
-            ...coords,
-            latitudeDelta: config.map.initialRegionDelta,
-            longitudeDelta: config.map.initialRegionDelta,
-          });
-        },
-      );
-    })();
+    const venues = (venuesRes.data ?? []) as Venue[];
+    const events = (eventsRes.data ?? []) as SpinEvent[];
 
-    return () => subscription?.remove();
-  }, []);
+    setCandidates({
+      lieu: [...venues.filter(v => v.category === 'lieu'), ...events.filter(e => e.category === 'lieu')]
+        .map(i => ({ id: i.id, name: 'name' in i ? i.name : i.title, photo_url: i.photo_url ?? null })),
+      table: venues.filter(v => v.category === 'restaurant')
+        .map(v => ({ id: v.id, name: v.name, photo_url: v.photo_url ?? null })),
+      sortie: [...venues.filter(v => v.category === 'ambiance'), ...events.filter(e => e.category === 'ambiance')]
+        .map(i => ({ id: i.id, name: 'name' in i ? i.name : i.title, photo_url: i.photo_url ?? null })),
+    });
+  }
 
-  if (!userLocation) {
+  async function handleSpin(reelIndex?: 0 | 1 | 2) {
+    setIsSpinning(true);
+    await spin(reelIndex);
+    // useSpin appelle showResults() qui met à jour le stage
+    // On attend la fin des animations (géré dans Reel via stopDelay)
+    // Reel 2 finit à 1400ms (stopDelay) + 1550ms (phases) = 2950ms → on attend 3200ms
+    setTimeout(() => setIsSpinning(false), 3200);
+  }
+
+  function handleValidate() {
+    goToPlan();
+    router.push('/plan');
+  }
+
+  function handleReelPress(index: 0 | 1 | 2) {
+    const result = reelResults[index];
+    if (result) setDetailItem(result);
+  }
+
+  // Écran de chargement pendant la sync des données
+  if (!ready) {
     return (
-      <View className="flex-1 items-center justify-center bg-black">
-        <ActivityIndicator color={colors.primary} size="large" />
-        <Text className="text-white mt-4">Localisation en cours...</Text>
+      <View style={styles.loading}>
+        <Text style={styles.loadingEmoji}>🎰</Text>
+        <ActivityIndicator color="#7C3AED" size="large" style={{ marginTop: 16 }} />
+        <Text style={styles.loadingText}>
+          {syncing ? 'Préparation de ton escapade...' : 'Chargement...'}
+        </Text>
       </View>
     );
   }
 
   return (
-    <View className="flex-1">
-      <MapView
-        ref={mapRef}
-        provider={PROVIDER_DEFAULT}
-        style={{ flex: 1 }}
-        initialRegion={{
-          latitude: userLocation.latitude,
-          longitude: userLocation.longitude,
-          latitudeDelta: config.map.initialRegionDelta,
-          longitudeDelta: config.map.initialRegionDelta,
-        }}
-        showsUserLocation
-        showsMyLocationButton={false}
-      >
-        {quests.map((quest) => {
-          const { latitude, longitude } = quest;
-          if (!latitude || !longitude) return null;
-
-          return (
-            <Fragment key={quest.id}>
-              <Circle
-                center={{ latitude, longitude }}
-                radius={config.quest.checkInDistanceMeters}
-                strokeColor={colors.primary}
-                fillColor={`${colors.primary}30`}
-              />
-              <Marker
-                coordinate={{ latitude, longitude }}
-                onPress={() => setActiveQuest(quest)}
-                pinColor={activeQuest?.id === quest.id ? colors.secondary : colors.primary}
-                title={quest.title}
-                description={`+${quest.xp_reward} XP`}
-              />
-            </Fragment>
-          );
-        })}
-      </MapView>
-
-      {/* Debug badge */}
-      <View className="absolute top-16 right-4 bg-black/70 px-3 py-1 rounded-full">
-        <Text className="text-white text-xs">{quests.length} quêtes</Text>
-      </View>
-
-      {/* Loading / error overlay */}
-      {(isLoading || questError) && (
-        <View className="absolute top-16 self-center bg-black/60 px-4 py-2 rounded-full">
-          <Text className="text-white text-sm">
-            {questError ? `Erreur: ${questError.message}` : 'Chargement des quêtes...'}
-          </Text>
-        </View>
-      )}
-
-      {/* Active quest card */}
-      {activeQuest && (
-        <View className="absolute bottom-8 left-4 right-4 bg-white rounded-2xl p-4 shadow-lg">
-          <Text className="text-lg font-bold text-gray-900">{activeQuest.title}</Text>
-          <Text className="text-gray-500 mt-1">{activeQuest.description}</Text>
-          <Text className="text-purple-600 font-semibold mt-2">+{activeQuest.xp_reward} XP</Text>
-          <TouchableOpacity
-            className="mt-3 bg-purple-600 rounded-xl py-3 items-center"
-            onPress={() => setActiveQuest(null)}
-          >
-            <Text className="text-white font-bold">Valider la quête</Text>
+    <SafeAreaView style={styles.root}>
+      {/* Header */}
+      <View style={styles.header}>
+        <View style={styles.headerRow}>
+          <Text style={styles.title}>Spin</Text>
+          <TouchableOpacity onPress={() => router.push('/profile')} style={styles.profileBtn}>
+            <Text style={styles.profileIcon}>👤</Text>
           </TouchableOpacity>
         </View>
+        <Text style={styles.subtitle}>Paris en 3 secondes.</Text>
+      </View>
+
+      {/* Sélecteur de mode */}
+      <View style={styles.modeSelector}>
+        {MODES.map(m => (
+          <TouchableOpacity
+            key={m.key}
+            style={[styles.modeBtn, mode === m.key && styles.modeBtnActive]}
+            onPress={() => { setMode(m.key); resetEscapade(); }}
+          >
+            <Text style={styles.modeEmoji}>{m.emoji}</Text>
+            <Text style={[styles.modeLabel, mode === m.key && styles.modeLabelActive]}>
+              {m.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {/* Machine à sous */}
+      <View style={styles.machine}>
+        <SlotMachine
+          mode={mode}
+          candidates={candidates}
+          results={{
+            lieu:   toReelItem(reelResults[0]),
+            table:  toReelItem(reelResults[1]),
+            sortie: toReelItem(reelResults[2]),
+          }}
+          isSpinning={isSpinning}
+          onSpin={handleSpin}
+          onValidate={handleValidate}
+          onReelPress={handleReelPress}
+        />
+        <VenueDetailModal
+          item={detailItem}
+          visible={detailItem !== null}
+          onClose={() => setDetailItem(null)}
+        />
+      </View>
+
+      {/* Erreur spin */}
+      {spinError && (
+        <Text style={styles.error}>{spinError}</Text>
       )}
-    </View>
+    </SafeAreaView>
   );
 }
+
+const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+    backgroundColor: '#0a0a16',
+  },
+  loading: {
+    flex: 1,
+    backgroundColor: '#0a0a16',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadingEmoji: {
+    fontSize: 64,
+  },
+  loadingText: {
+    color: 'rgba(255,255,255,0.5)',
+    marginTop: 16,
+    fontSize: 14,
+  },
+  header: {
+    paddingTop: 16,
+    paddingBottom: 8,
+    paddingHorizontal: 24,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  title: {
+    color: '#fff',
+    fontSize: 36,
+    fontWeight: '900',
+    letterSpacing: 2,
+    flex: 1,
+    textAlign: 'center',
+  },
+  profileBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.07)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileIcon: { fontSize: 16 },
+  subtitle: {
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: 13,
+    letterSpacing: 1,
+    textAlign: 'center',
+    marginTop: 2,
+  },
+  modeSelector: {
+    flexDirection: 'row',
+    marginHorizontal: 24,
+    marginVertical: 16,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderRadius: 14,
+    padding: 4,
+    gap: 4,
+  },
+  modeBtn: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderRadius: 10,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  modeBtnActive: {
+    backgroundColor: '#7C3AED',
+  },
+  modeEmoji: {
+    fontSize: 14,
+  },
+  modeLabel: {
+    color: 'rgba(255,255,255,0.4)',
+    fontWeight: '600',
+    fontSize: 13,
+  },
+  modeLabelActive: {
+    color: '#fff',
+  },
+  machine: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  error: {
+    color: '#f87171',
+    textAlign: 'center',
+    padding: 16,
+    fontSize: 13,
+  },
+});

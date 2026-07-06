@@ -7,6 +7,8 @@ import { Session } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { queryClient } from '../lib/queryClient';
 
+// Attrape les erreurs de rendu React et affiche un écran d'erreur lisible
+// au lieu d'un écran blanc, utile pour le débogage en développement
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null };
   static getDerivedStateFromError(error: Error) { return { error }; }
@@ -27,6 +29,9 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
   }
 }
 
+// Redirige automatiquement l'utilisateur selon son état de connexion :
+// - pas de session → page login
+// - session active sur la page login → page principale
 function AuthGuard({ session }: { session: Session | null }) {
   const segments = useSegments();
   const router = useRouter();
@@ -44,16 +49,20 @@ function AuthGuard({ session }: { session: Session | null }) {
   return null;
 }
 
+// Layout racine de l'app, rendu une seule fois au démarrage
+// Il gère la session Supabase et fournit les providers globaux (React Query)
 export default function RootLayout() {
   const [session, setSession] = useState<Session | null>(null);
   const [initialized, setInitialized] = useState(false);
 
   useEffect(() => {
+    // Récupère la session existante (stockée dans SecureStore) au démarrage
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setInitialized(true);
     });
 
+    // Écoute les changements de session (connexion, déconnexion, refresh du token)
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
     });
@@ -61,6 +70,7 @@ export default function RootLayout() {
     return () => subscription.unsubscribe();
   }, []);
 
+  // Spinner pendant la vérification de la session au démarrage
   if (!initialized) return (
     <View style={{ flex: 1, backgroundColor: '#000' }}>
       <ActivityIndicator style={{ flex: 1 }} color="#6C63FF" />
@@ -69,11 +79,15 @@ export default function RootLayout() {
 
   return (
     <ErrorBoundary>
+      {/* QueryClientProvider rend React Query disponible dans toute l'app */}
       <QueryClientProvider client={queryClient}>
         <AuthGuard session={session} />
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="login" />
           <Stack.Screen name="index" />
+          <Stack.Screen name="plan" />
+          <Stack.Screen name="checkin" />
+          <Stack.Screen name="profile" />
         </Stack>
       </QueryClientProvider>
     </ErrorBoundary>
