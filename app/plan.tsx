@@ -217,7 +217,7 @@ function StopModal({ stop, stopIndex, userLocation, onClose }: StopModalProps) {
 
 export default function PlanScreen() {
   const router = useRouter();
-  const { reelResults, resetEscapade } = useGameStore();
+  const { reelResults, resetEscapade, startCheckin } = useGameStore();
   const mode = 'soiree'; // TODO: lire depuis le store
 
   const [selectedStopIndex, setSelectedStopIndex] = useState<number | null>(null);
@@ -341,7 +341,7 @@ export default function PlanScreen() {
 
         {/* CTA */}
         <View style={styles.cta}>
-          <TouchableOpacity style={styles.startBtn} onPress={() => router.push('/checkin')}>
+          <TouchableOpacity style={styles.startBtn} onPress={() => { startCheckin(); router.push('/checkin'); }}>
             <Text style={styles.startBtnText}>🚀  Démarrer l'escapade</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.cancelBtn} onPress={() => { resetEscapade(); router.back(); }}>

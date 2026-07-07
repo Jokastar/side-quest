@@ -1,4 +1,10 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(node -e ' *)",
+      "Bash(npx supabase *)"
+    ]
+  },
   "enabledPlugins": {
     "expo@claude-plugins-official": true
   }

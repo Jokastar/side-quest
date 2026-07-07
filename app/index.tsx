@@ -8,6 +8,7 @@ import { useUserLocation } from '../hooks/useUserLocation';
 import { supabase } from '../lib/supabase';
 import SlotMachine, { SpinMode } from '../components/SlotMachine';
 import VenueDetailModal from '../components/VenueDetailModal';
+import PreferencesSheet from '../components/PreferencesSheet';
 import type { ReelItem } from '../components/Reel';
 import type { Venue, SpinEvent } from '../types/database';
 
@@ -19,6 +20,9 @@ function detectMode(): SpinMode {
   return 'soiree';
 }
 
+// Sélection du créneau : 'auto' = suivre l'heure actuelle
+type TimingSelection = 'auto' | SpinMode;
+
 // Convertit un Venue ou SpinEvent en ReelItem (format attendu par Reel)
 function toReelItem(item: Venue | SpinEvent | null): ReelItem | null {
   if (!item) return null;
@@ -29,10 +33,11 @@ function toReelItem(item: Venue | SpinEvent | null): ReelItem | null {
   };
 }
 
-const MODES: { key: SpinMode; label: string; emoji: string }[] = [
-  { key: 'midi',    label: 'Midi',    emoji: '☀️' },
-  { key: 'journee', label: 'Journée', emoji: '🌤️' },
-  { key: 'soiree',  label: 'Soirée',  emoji: '🌙' },
+const MODES: { key: TimingSelection; label: string; emoji: string }[] = [
+  { key: 'auto',    label: 'Mnt',        emoji: '✨' },
+  { key: 'midi',    label: 'Déj',        emoji: '☀️' },
+  { key: 'journee', label: 'Aprem',      emoji: '🌤️' },
+  { key: 'soiree',  label: 'Soir',       emoji: '🌙' },
 ];
 
 export default function HomeScreen() {
@@ -40,11 +45,14 @@ export default function HomeScreen() {
   const { syncing, ready } = useDataSync();
   const { spin, error: spinError } = useSpin();
   useUserLocation();
-  const { stage, reelResults, resetEscapade, goToPlan } = useGameStore();
+  const { stage, reelResults, resetEscapade, goToPlan, preferences } = useGameStore();
 
-  const [mode, setMode] = useState<SpinMode>(detectMode());
+  // Créneau initial = celui choisi à l'onboarding ('auto' = suivre l'heure)
+  const [timingSelection, setTimingSelection] = useState<TimingSelection>(preferences.defaultTiming);
+  const mode: SpinMode = timingSelection === 'auto' ? detectMode() : timingSelection;
   const [isSpinning, setIsSpinning] = useState(false);
   const [detailItem, setDetailItem] = useState<Venue | SpinEvent | null>(null);
+  const [prefsOpen, setPrefsOpen] = useState(false);
   const [candidates, setCandidates] = useState<{
     lieu: ReelItem[];
     table: ReelItem[];
@@ -58,13 +66,15 @@ export default function HomeScreen() {
   }, [ready, mode]);
 
   async function loadCandidates() {
+    // Aligné sur la sync : événements de la journée uniquement
     const now = new Date().toISOString();
-    const in48h = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
+    const endOfToday = new Date();
+    endOfToday.setHours(23, 59, 59, 999);
 
     const [venuesRes, eventsRes] = await Promise.all([
       supabase.from('venues').select('id, name, photo_url, category').eq('is_active', true),
       supabase.from('events').select('id, title, photo_url, category')
-        .lte('start_date', in48h)
+        .lte('start_date', endOfToday.toISOString())
         .or(`end_date.gt.${now},end_date.is.null`),
     ]);
 
@@ -93,6 +103,43 @@ export default function HomeScreen() {
   function handleValidate() {
     goToPlan();
     router.push('/plan');
+    // Crée la ligne escapade en arrière-plan (non bloquant pour la navigation).
+    // L'id arrive bien avant le check-in, qui l'utilise pour lier les tampons.
+    createEscapade();
+  }
+
+  // Insère l'escapade en DB et mémorise son id dans le store.
+  // Les reels lieu/ambiance peuvent être des venues OU des events :
+  // on ne remplit que les colonnes du bon type (les autres restent null).
+  async function createEscapade() {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const [lieu, table, sortie] = reelResults;
+      const isVenue = (i: Venue | SpinEvent | null): i is Venue => !!i && 'name' in i;
+      const isEvent = (i: Venue | SpinEvent | null): i is SpinEvent => !!i && 'title' in i;
+
+      const { data, error } = await supabase
+        .from('escapades')
+        .insert({
+          user_id:       user.id,
+          venue_id:      isVenue(lieu) ? lieu.id : null,
+          restaurant_id: isVenue(table) ? table.id : null,
+          event_id:      isEvent(sortie) ? sortie.id : isEvent(lieu) ? lieu.id : null,
+          status:        'accepted',
+        })
+        .select('id')
+        .single();
+
+      if (error) {
+        console.warn('[escapade] insert error:', error.message);
+        return;
+      }
+      if (data?.id) useGameStore.getState().setCurrentEscapadeId(data.id);
+    } catch (e) {
+      console.warn('[escapade] create error:', e);
+    }
   }
 
   function handleReelPress(index: 0 | 1 | 2) {
@@ -118,6 +165,9 @@ export default function HomeScreen() {
       {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerRow}>
+          <TouchableOpacity onPress={() => setPrefsOpen(true)} style={styles.profileBtn}>
+            <Text style={styles.profileIcon}>🎛️</Text>
+          </TouchableOpacity>
           <Text style={styles.title}>Spin</Text>
           <TouchableOpacity onPress={() => router.push('/profile')} style={styles.profileBtn}>
             <Text style={styles.profileIcon}>👤</Text>
@@ -131,11 +181,11 @@ export default function HomeScreen() {
         {MODES.map(m => (
           <TouchableOpacity
             key={m.key}
-            style={[styles.modeBtn, mode === m.key && styles.modeBtnActive]}
-            onPress={() => { setMode(m.key); resetEscapade(); }}
+            style={[styles.modeBtn, timingSelection === m.key && styles.modeBtnActive]}
+            onPress={() => { setTimingSelection(m.key); resetEscapade(); }}
           >
             <Text style={styles.modeEmoji}>{m.emoji}</Text>
-            <Text style={[styles.modeLabel, mode === m.key && styles.modeLabelActive]}>
+            <Text style={[styles.modeLabel, timingSelection === m.key && styles.modeLabelActive]}>
               {m.label}
             </Text>
           </TouchableOpacity>
@@ -161,6 +211,10 @@ export default function HomeScreen() {
           item={detailItem}
           visible={detailItem !== null}
           onClose={() => setDetailItem(null)}
+        />
+        <PreferencesSheet
+          visible={prefsOpen}
+          onClose={() => setPrefsOpen(false)}
         />
       </View>
 

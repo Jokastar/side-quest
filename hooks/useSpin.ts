@@ -28,27 +28,29 @@ const REEL_CATEGORIES: Record<ReelIndex, 'lieu' | 'restaurant' | 'ambiance'> = {
   2: 'ambiance',
 };
 
-// Budget utilisateur → prix maximum accepté pour un événement (en euros)
-const BUDGET_MAX_PRICE: Record<number, number> = {
-  1: 0,    // € = gratuit uniquement
-  2: 20,   // €€ = jusqu'à 20€
-  3: 999,  // €€€ = pas de limite
-};
+// Prix max par personne (préférence onboarding) → prix max event (euros)
+// null = peu importe → pas de limite
+function eventMaxPrice(maxPrice: number | null): number {
+  return maxPrice ?? 999;
+}
 
-// Budget utilisateur → price_level maximum accepté pour un venue Google Places
-const BUDGET_MAX_PRICE_LEVEL: Record<number, number> = {
-  1: 1,
-  2: 2,
-  3: 3,
-};
+// Prix max par personne → price_level max accepté pour un venue Google Places
+// 0€ (gratuit) → level 1 · ≤15€ → level 2 · ≤30€ → level 3 · peu importe → level 3
+function venueMaxPriceLevel(maxPrice: number | null): number {
+  if (maxPrice === null) return 3;
+  if (maxPrice === 0) return 1;
+  if (maxPrice <= 15) return 2;
+  return 3;
+}
 
-// Fenêtre d'accessibilité dynamique :
-// - start_before : events qui commencent dans les 48h
-// - now          : pour vérifier que l'event n'est pas déjà terminé
-function getAccessibilityWindow(): { now: string; in48h: string } {
+// Fenêtre d'accessibilité — alignée sur la sync (même journée) :
+// - endOfToday : l'event doit avoir commencé aujourd'hui au plus tard
+// - now        : pour vérifier que l'event n'est pas déjà terminé
+function getAccessibilityWindow(): { now: string; endOfToday: string } {
   const now = new Date();
-  const in48h = new Date(now.getTime() + 48 * 60 * 60 * 1000);
-  return { now: now.toISOString(), in48h: in48h.toISOString() };
+  const endOfToday = new Date(now);
+  endOfToday.setHours(23, 59, 59, 999);
+  return { now: now.toISOString(), endOfToday: endOfToday.toISOString() };
 }
 
 // Calcule le score d'un candidat selon les préférences et la position de l'user
@@ -128,13 +130,13 @@ export function useSpin() {
   // surtout quand la sync Google Places n'a pas encore tourné.
   async function spinSingleReel(index: ReelIndex, retryWithoutMemory = false): Promise<ReelResult> {
     const category = REEL_CATEGORIES[index];
-    const { budget } = preferences;
-    const { now, in48h } = getAccessibilityWindow();
+    const { maxPrice } = preferences;
+    const { now, endOfToday } = getAccessibilityWindow();
     const excluded = retryWithoutMemory ? [] : recentlyShown.current[index];
 
     // ── Venues (lieux permanents Google Places) ─────────────────
     // price_level.is.null OR price_level <= max : on inclut les venues sans prix renseigné
-    const maxLevel = BUDGET_MAX_PRICE_LEVEL[budget];
+    const maxLevel = venueMaxPriceLevel(maxPrice);
     let venueQuery = supabase
       .from('venues')
       .select('*')
@@ -153,9 +155,9 @@ export function useSpin() {
         .from('events')
         .select('*')
         .eq('category', category)
-        .lte('start_date', in48h)
+        .lte('start_date', endOfToday)
         .or(`end_date.gt.${now},end_date.is.null`)
-        .lte('price', BUDGET_MAX_PRICE[budget]);
+        .lte('price', eventMaxPrice(maxPrice));
       if (excluded.length > 0) {
         eventQuery = eventQuery.not('id', 'in', `(${excluded.join(',')})`);
       }

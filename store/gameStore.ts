@@ -48,6 +48,11 @@ interface GameState {
   preferences: UserPreferences;
   setPreferences: (prefs: Partial<UserPreferences>) => void;
 
+  // Onboarding : null = pas encore chargé depuis le stockage,
+  // false = à faire, true = terminé
+  hasOnboarded: boolean | null;
+  setHasOnboarded: (done: boolean) => void;
+
   // ── Résultats des 3 reels ─────────────────────────────────
   // Index 0 = lieu, 1 = restaurant, 2 = ambiance
   reelResults: [ReelResult, ReelResult, ReelResult];
@@ -80,13 +85,19 @@ export const useGameStore = create<GameState>((set) => ({
   setUserLocation: (location) => set({ userLocation: location }),
 
   // ── Préférences par défaut ────────────────────────────────
+  // Écrasées au démarrage par celles du SecureStore (voir _layout.tsx)
   preferences: {
-    budget: 2,         // €€ par défaut
+    maxPrice: 30,
+    groupSize: 'duo',
     vibe: 'chill',
     distance: 'metro',
+    defaultTiming: 'auto',
   },
   setPreferences: (prefs) =>
     set((state) => ({ preferences: { ...state.preferences, ...prefs } })),
+
+  hasOnboarded: null,
+  setHasOnboarded: (done) => set({ hasOnboarded: done }),
 
   // ── Reels ─────────────────────────────────────────────────
   reelResults: [null, null, null],

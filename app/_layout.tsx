@@ -6,6 +6,8 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { Session } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { queryClient } from '../lib/queryClient';
+import { loadStoredPrefs } from '../lib/prefsStorage';
+import { useGameStore } from '../store/gameStore';
 
 // Attrape les erreurs de rendu React et affiche un écran d'erreur lisible
 // au lieu d'un écran blanc, utile pour le débogage en développement
@@ -29,22 +31,30 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
   }
 }
 
-// Redirige automatiquement l'utilisateur selon son état de connexion :
+// Redirige automatiquement l'utilisateur selon son état :
 // - pas de session → page login
-// - session active sur la page login → page principale
+// - session mais onboarding pas fait → onboarding
+// - session + onboardé sur login/onboarding → page principale
 function AuthGuard({ session }: { session: Session | null }) {
   const segments = useSegments();
   const router = useRouter();
+  const hasOnboarded = useGameStore((s) => s.hasOnboarded);
 
   useEffect(() => {
+    // hasOnboarded === null : le SecureStore n'est pas encore lu, on attend
+    if (hasOnboarded === null) return;
+
     const inAuthScreen = segments[0] === 'login';
+    const inOnboarding = segments[0] === 'onboarding';
 
     if (!session && !inAuthScreen) {
       router.replace('/login');
-    } else if (session && inAuthScreen) {
+    } else if (session && !hasOnboarded && !inOnboarding) {
+      router.replace('/onboarding');
+    } else if (session && hasOnboarded && (inAuthScreen || inOnboarding)) {
       router.replace('/');
     }
-  }, [session, segments]);
+  }, [session, hasOnboarded, segments]);
 
   return null;
 }
@@ -56,6 +66,14 @@ export default function RootLayout() {
   const [initialized, setInitialized] = useState(false);
 
   useEffect(() => {
+    // Charge les préférences + flag onboarding depuis le SecureStore
+    loadStoredPrefs().then(({ preferences, hasOnboarded }) => {
+      const store = useGameStore.getState();
+      store.setPreferences(preferences);
+      store.setHasOnboarded(hasOnboarded);
+      if (hasOnboarded) store.finishOnboarding(); // FSM : saute l'étape ONBOARDING
+    });
+
     // Récupère la session existante (stockée dans SecureStore) au démarrage
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
@@ -84,6 +102,7 @@ export default function RootLayout() {
         <AuthGuard session={session} />
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="login" />
+          <Stack.Screen name="onboarding" />
           <Stack.Screen name="index" />
           <Stack.Screen name="plan" />
           <Stack.Screen name="checkin" />

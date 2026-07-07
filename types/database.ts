@@ -146,22 +146,24 @@ export interface Database {
 
       // Une escapade générée = 1 lieu + 1 restaurant + 1 ambiance
       // status : generated (affiché) → accepted (validé par user) → completed (check-in fait)
+      // Les refs sont nullables : les reels lieu/ambiance peuvent être
+      // des venues OU des events, on ne remplit que la colonne du bon type
       escapades: {
         Row: {
           id: string;
           user_id: string;
-          venue_id: string;       // reel 1 : lieu à visiter
-          restaurant_id: string;  // reel 2 : restaurant
-          event_id: string;       // reel 3 : ambiance / sortie
+          venue_id: string | null;       // reel 1 : lieu (si venue)
+          restaurant_id: string | null;  // reel 2 : restaurant (venue)
+          event_id: string | null;       // reel 1 ou 3 (si event)
           status: 'generated' | 'accepted' | 'completed';
           created_at: string;
         };
         Insert: {
           id?: string;
           user_id: string;
-          venue_id: string;
-          restaurant_id: string;
-          event_id: string;
+          venue_id?: string | null;
+          restaurant_id?: string | null;
+          event_id?: string | null;
           status?: 'generated' | 'accepted' | 'completed';
           created_at?: string;
         };
@@ -301,13 +303,24 @@ export type Stamp = Database['public']['Tables']['stamps']['Row'];
 export type Badge = Database['public']['Tables']['badges']['Row'];
 export type UserBadge = Database['public']['Tables']['user_badges']['Row'];
 
-// Préférences utilisateur (stockées localement + en DB)
-export type Budget = 1 | 2 | 3;             // 1=€, 2=€€, 3=€€€
+// Préférences utilisateur (persistées en SecureStore, définies à l'onboarding)
 export type Vibe = 'chill' | 'festif' | 'culturel';
 export type Distance = 'apied' | 'metro' | 'nImporte';
 
+// Prix max par personne : 0 = gratuit uniquement, null = peu importe
+export type MaxPrice = 0 | 15 | 30 | null;
+
+// Taille du groupe — en buckets, pas en nombre exact
+export type GroupSize = 'solo' | 'duo' | 'groupe' | 'bande';
+
+// Créneau par défaut choisi à l'onboarding
+// 'auto' = détection selon l'heure actuelle (detectMode)
+export type DefaultTiming = 'auto' | 'midi' | 'journee' | 'soiree';
+
 export interface UserPreferences {
-  budget: Budget;
+  maxPrice: MaxPrice;
+  groupSize: GroupSize;
   vibe: Vibe;
   distance: Distance;
+  defaultTiming: DefaultTiming;
 }
