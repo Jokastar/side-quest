@@ -95,6 +95,8 @@ export interface Database {
 
       // Cache des événements Paris Open Data + Eventbrite
       // Rafraîchi toutes les 6h par une Supabase Edge Function
+      // Curation : la sync insère en 'pending' (défaut DB), seuls les
+      // événements passés en 'approved' apparaissent dans les reels
       events: {
         Row: {
           id: string;
@@ -111,6 +113,15 @@ export interface Database {
           price: number;              // 0 = gratuit
           url: string | null;
           photo_url: string | null;
+          tags: string | null;          // types source, ex: "Expo;Histoire"
+          occurrences: string | null;   // créneaux précis "start_end;start_end;…"
+          schedule_text: string | null; // horaires en clair ("dimanche de 11h à 20h…")
+          address: string | null;       // adresse complète avec code postal
+          transport: string | null;     // "Métro -> 8 : Chemin Vert (272m)…"
+          access_type: string | null;   // 'obligatoire' | 'conseillé' | null
+          access_link: string | null;   // lien de réservation
+          is_indoor: boolean;           // intérieur / extérieur
+          status: 'pending' | 'approved' | 'rejected';
           cached_at: string;
         };
         Insert: {
@@ -128,6 +139,15 @@ export interface Database {
           price?: number;
           url?: string | null;
           photo_url?: string | null;
+          tags?: string | null;
+          occurrences?: string | null;
+          schedule_text?: string | null;
+          address?: string | null;
+          transport?: string | null;
+          access_type?: string | null;
+          access_link?: string | null;
+          is_indoor?: boolean;
+          status?: 'pending' | 'approved' | 'rejected';
           cached_at?: string;
         };
         Update: {
@@ -139,6 +159,15 @@ export interface Database {
           price?: number;
           url?: string | null;
           photo_url?: string | null;
+          tags?: string | null;
+          occurrences?: string | null;
+          schedule_text?: string | null;
+          address?: string | null;
+          transport?: string | null;
+          access_type?: string | null;
+          access_link?: string | null;
+          is_indoor?: boolean;
+          status?: 'pending' | 'approved' | 'rejected';
           cached_at?: string;
         };
         Relationships: [];

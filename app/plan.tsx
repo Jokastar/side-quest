@@ -19,7 +19,7 @@ function getName(item: Venue | SpinEvent) {
 }
 
 function getAddress(item: Venue | SpinEvent) {
-  return isEvent(item) ? (item.venue_name ?? null) : item.address;
+  return isEvent(item) ? (item.address ?? item.venue_name ?? null) : item.address;
 }
 
 function getCoords(item: Venue | SpinEvent) {
@@ -137,6 +137,14 @@ function StopModal({ stop, stopIndex, userLocation, onClose }: StopModalProps) {
   const description = getDescription(stop);
   const coords = getCoords(stop);
 
+  // Champs enrichis (events uniquement) — l'escapade est validée ici,
+  // donc le bouton Réserver a sa place
+  const isEvt       = isEvent(stop);
+  const schedule    = isEvt ? stop.schedule_text : null;
+  const transport   = isEvt ? stop.transport : null;
+  const needsResa   = isEvt && stop.access_type === 'obligatoire';
+  const bookingLink = isEvt ? stop.access_link : null;
+
   return (
     <Modal
       visible
@@ -163,11 +171,18 @@ function StopModal({ stop, stopIndex, userLocation, onClose }: StopModalProps) {
 
         {/* Infos */}
         <View style={styles.sheetContent}>
-          {/* Badge catégorie */}
-          <View style={[styles.sheetBadge, { backgroundColor: cfg.color + '22' }]}>
-            <Text style={[styles.sheetBadgeText, { color: cfg.color }]}>
-              {cfg.emoji}  {cfg.label.toUpperCase()}  ·  ÉTAPE {stopIndex + 1}
-            </Text>
+          {/* Badges : catégorie + résa obligatoire */}
+          <View style={styles.sheetBadgeRow}>
+            <View style={[styles.sheetBadge, { backgroundColor: cfg.color + '22' }]}>
+              <Text style={[styles.sheetBadgeText, { color: cfg.color }]}>
+                {cfg.emoji}  {cfg.label.toUpperCase()}  ·  ÉTAPE {stopIndex + 1}
+              </Text>
+            </View>
+            {needsResa && (
+              <View style={styles.sheetResaBadge}>
+                <Text style={styles.sheetResaBadgeText}>🎟 RÉSA OBLIGATOIRE</Text>
+              </View>
+            )}
           </View>
 
           <Text style={styles.sheetName}>{name}</Text>
@@ -176,8 +191,32 @@ function StopModal({ stop, stopIndex, userLocation, onClose }: StopModalProps) {
             <Text style={styles.sheetAddress}>{address}</Text>
           )}
 
+          {/* Horaires en clair (expos, événements récurrents) */}
+          {schedule && (
+            <Text style={styles.sheetSchedule} numberOfLines={3}>🕐 {schedule}</Text>
+          )}
+
+          {/* Transports à proximité */}
+          {transport && (
+            <View style={styles.sheetTransitInfo}>
+              {transport.split('\n').slice(0, 2).map((line, i) => (
+                <Text key={i} style={styles.sheetTransitLine}>🚇 {line.replace('->', '·')}</Text>
+              ))}
+            </View>
+          )}
+
           {description && (
             <Text style={styles.sheetDescription} numberOfLines={3}>{description}</Text>
+          )}
+
+          {/* Réserver — visible ici car l'escapade est validée */}
+          {bookingLink && (
+            <TouchableOpacity
+              style={styles.sheetBookBtn}
+              onPress={() => Linking.openURL(bookingLink)}
+            >
+              <Text style={styles.sheetBookBtnText}>🎟  Réserver ma place</Text>
+            </TouchableOpacity>
           )}
 
           {/* Boutons transport → CE lieu précis */}
@@ -217,8 +256,7 @@ function StopModal({ stop, stopIndex, userLocation, onClose }: StopModalProps) {
 
 export default function PlanScreen() {
   const router = useRouter();
-  const { reelResults, resetEscapade, startCheckin } = useGameStore();
-  const mode = 'soiree'; // TODO: lire depuis le store
+  const { reelResults, resetEscapade, startCheckin, spinMode: mode } = useGameStore();
 
   const [selectedStopIndex, setSelectedStopIndex] = useState<number | null>(null);
   const userLocation = useGameStore((s) => s.userLocation);
@@ -509,8 +547,27 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   sheetBadgeText: { fontSize: 10, fontWeight: '800', letterSpacing: 1.2 },
+  sheetBadgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  sheetResaBadge: {
+    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8,
+    backgroundColor: 'rgba(234,88,12,0.18)',
+    borderWidth: 1, borderColor: 'rgba(234,88,12,0.45)',
+  },
+  sheetResaBadgeText: { color: '#fb923c', fontSize: 10, fontWeight: '800', letterSpacing: 1 },
   sheetName: { color: '#fff', fontSize: 20, fontWeight: '900', lineHeight: 26 },
   sheetAddress: { color: 'rgba(255,255,255,0.45)', fontSize: 13 },
+  sheetSchedule: {
+    color: 'rgba(255,255,255,0.55)', fontSize: 12, lineHeight: 17,
+    backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 8,
+    paddingHorizontal: 10, paddingVertical: 6,
+  },
+  sheetTransitInfo: { gap: 2 },
+  sheetTransitLine: { color: 'rgba(255,255,255,0.5)', fontSize: 12 },
+  sheetBookBtn: {
+    backgroundColor: '#EA580C', borderRadius: 12,
+    paddingVertical: 13, alignItems: 'center', marginTop: 4,
+  },
+  sheetBookBtnText: { color: '#fff', fontWeight: '800', fontSize: 15 },
   sheetDescription: { color: 'rgba(255,255,255,0.6)', fontSize: 13, lineHeight: 19 },
   sheetRouteLabel: { color: 'rgba(255,255,255,0.4)', fontSize: 12, marginTop: 4 },
   sheetTransportRow: { flexDirection: 'row', gap: 10 },

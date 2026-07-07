@@ -9,18 +9,12 @@ import { supabase } from '../lib/supabase';
 import SlotMachine, { SpinMode } from '../components/SlotMachine';
 import VenueDetailModal from '../components/VenueDetailModal';
 import PreferencesSheet from '../components/PreferencesSheet';
+import { detectMode, isModePast } from '../lib/timing';
 import type { ReelItem } from '../components/Reel';
 import type { Venue, SpinEvent } from '../types/database';
 
-// ── Détection automatique du mode selon l'heure ──────────────
-function detectMode(): SpinMode {
-  const h = new Date().getHours();
-  if (h >= 10 && h < 14) return 'midi';
-  if (h >= 14 && h < 19) return 'journee';
-  return 'soiree';
-}
-
 // Sélection du créneau : 'auto' = suivre l'heure actuelle
+// (detectMode / isModePast : voir lib/timing.ts)
 type TimingSelection = 'auto' | SpinMode;
 
 // Convertit un Venue ou SpinEvent en ReelItem (format attendu par Reel)
@@ -45,10 +39,16 @@ export default function HomeScreen() {
   const { syncing, ready } = useDataSync();
   const { spin, error: spinError } = useSpin();
   useUserLocation();
-  const { stage, reelResults, resetEscapade, goToPlan, preferences } = useGameStore();
+  const { stage, reelResults, resetEscapade, goToPlan, preferences, setSpinMode } = useGameStore();
 
-  // Créneau initial = celui choisi à l'onboarding ('auto' = suivre l'heure)
-  const [timingSelection, setTimingSelection] = useState<TimingSelection>(preferences.defaultTiming);
+  // Créneau initial = celui choisi à l'onboarding ('auto' = suivre l'heure).
+  // Si le créneau par défaut est déjà passé aujourd'hui (ex: "Déjeuner" à 21h),
+  // on retombe sur 'auto' plutôt que de proposer un créneau impossible.
+  const [timingSelection, setTimingSelection] = useState<TimingSelection>(() =>
+    preferences.defaultTiming !== 'auto' && isModePast(preferences.defaultTiming)
+      ? 'auto'
+      : preferences.defaultTiming,
+  );
   const mode: SpinMode = timingSelection === 'auto' ? detectMode() : timingSelection;
   const [isSpinning, setIsSpinning] = useState(false);
   const [detailItem, setDetailItem] = useState<Venue | SpinEvent | null>(null);
@@ -74,6 +74,7 @@ export default function HomeScreen() {
     const [venuesRes, eventsRes] = await Promise.all([
       supabase.from('venues').select('id, name, photo_url, category').eq('is_active', true),
       supabase.from('events').select('id, title, photo_url, category')
+        .eq('status', 'approved')   // curation : seuls les événements validés
         .lte('start_date', endOfToday.toISOString())
         .or(`end_date.gt.${now},end_date.is.null`),
     ]);
@@ -93,7 +94,8 @@ export default function HomeScreen() {
 
   async function handleSpin(reelIndex?: 0 | 1 | 2) {
     setIsSpinning(true);
-    await spin(reelIndex);
+    setSpinMode(mode); // mémorise le créneau pour la timeline du plan
+    await spin(reelIndex, mode);
     // useSpin appelle showResults() qui met à jour le stage
     // On attend la fin des animations (géré dans Reel via stopDelay)
     // Reel 2 finit à 1400ms (stopDelay) + 1550ms (phases) = 2950ms → on attend 3200ms
@@ -176,20 +178,32 @@ export default function HomeScreen() {
         <Text style={styles.subtitle}>Paris en 3 secondes.</Text>
       </View>
 
-      {/* Sélecteur de mode */}
+      {/* Sélecteur de mode — les créneaux déjà passés aujourd'hui sont désactivés */}
       <View style={styles.modeSelector}>
-        {MODES.map(m => (
-          <TouchableOpacity
-            key={m.key}
-            style={[styles.modeBtn, timingSelection === m.key && styles.modeBtnActive]}
-            onPress={() => { setTimingSelection(m.key); resetEscapade(); }}
-          >
-            <Text style={styles.modeEmoji}>{m.emoji}</Text>
-            <Text style={[styles.modeLabel, timingSelection === m.key && styles.modeLabelActive]}>
-              {m.label}
-            </Text>
-          </TouchableOpacity>
-        ))}
+        {MODES.map(m => {
+          const isPast = m.key !== 'auto' && isModePast(m.key);
+          return (
+            <TouchableOpacity
+              key={m.key}
+              style={[
+                styles.modeBtn,
+                timingSelection === m.key && styles.modeBtnActive,
+                isPast && styles.modeBtnDisabled,
+              ]}
+              disabled={isPast}
+              onPress={() => { setTimingSelection(m.key); resetEscapade(); }}
+            >
+              <Text style={[styles.modeEmoji, isPast && styles.modeDisabledText]}>{m.emoji}</Text>
+              <Text style={[
+                styles.modeLabel,
+                timingSelection === m.key && styles.modeLabelActive,
+                isPast && styles.modeDisabledText,
+              ]}>
+                {m.label}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
       </View>
 
       {/* Machine à sous */}
@@ -299,6 +313,12 @@ const styles = StyleSheet.create({
   },
   modeBtnActive: {
     backgroundColor: '#7C3AED',
+  },
+  modeBtnDisabled: {
+    opacity: 0.35,
+  },
+  modeDisabledText: {
+    color: 'rgba(255,255,255,0.25)',
   },
   modeEmoji: {
     fontSize: 14,

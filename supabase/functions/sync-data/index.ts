@@ -116,6 +116,27 @@ async function syncEvents(): Promise<number> {
       price: parsePrice(r.price_type, r.price_detail),
       url: r.url ?? null,
       photo_url: r.cover_url ?? null,
+      // Type(s) d'événement source, ex: "Expo;Histoire" — affiché en curation
+      tags: r.qfap_tags ?? null,
+      // Créneaux précis pour les événements récurrents, ex:
+      // "2026-07-07T18:00:00+02:00_2026-07-07T20:00:00+02:00;..."
+      occurrences: r.occurrences ?? null,
+      // Horaires en clair, ex: "Du 13 mai au 1er nov : dimanche de 11h à 20h…"
+      // (HTML retiré, espaces normalisés)
+      schedule_text: r.date_description
+        ? String(r.date_description).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() || null
+        : null,
+      // Adresse complète — le code postal permet de déduire l'arrondissement
+      // (indispensable pour le passeport des arrondissements côté tampons)
+      address: [r.address_street, r.address_zipcode, r.address_city]
+        .filter(Boolean).join(', ') || null,
+      // Transports à proximité, ex: "Métro -> 8 : Chemin Vert (272m)\nBus -> …"
+      transport: r.transport ?? null,
+      // Réservation : 'obligatoire' | 'conseillé' | null + lien de résa
+      access_type: r.access_type ?? null,
+      access_link: r.access_link ?? null,
+      // Intérieur / extérieur (utile plus tard pour scorer selon la météo)
+      is_indoor: r.event_indoor === 1,
       cached_at: new Date().toISOString(),
     });
   }
@@ -185,20 +206,33 @@ async function syncVenues(): Promise<number> {
 
 // ── Handler ───────────────────────────────────────────────────
 
-Deno.serve(async () => {
+// CORS : nécessaire pour les appels depuis un navigateur (admin web).
+// Les clients mobiles et le cron ne font pas de preflight, ça ne les affecte pas.
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+};
+
+Deno.serve(async (req) => {
+  // Réponse au preflight du navigateur
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: CORS_HEADERS });
+  }
+
   try {
     const [eventCount, venueCount] = await Promise.all([syncEvents(), syncVenues()]);
     const body = { ok: true, events: eventCount, venues: venueCount };
     console.log('[sync-data]', JSON.stringify(body));
     return new Response(JSON.stringify(body), {
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     console.error('[sync-data] error:', message);
     return new Response(JSON.stringify({ ok: false, error: message }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
     });
   }
 });

@@ -39,15 +39,42 @@ function formatDate(iso: string): string {
   });
 }
 
+// Créneau d'AUJOURD'HUI dans la liste "start_end;start_end;…" → "18h00 – 20h00"
+function todayOccurrence(occurrences: string | null): string | null {
+  if (!occurrences) return null;
+  const todayKey = new Date().toDateString();
+  const fmtTime = (d: Date) =>
+    d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }).replace(':', 'h');
+
+  for (const slot of occurrences.split(';')) {
+    const [start, end] = slot.split('_');
+    if (!start) continue;
+    const s = new Date(start);
+    if (s.toDateString() !== todayKey) continue;
+    return end ? `${fmtTime(s)} – ${fmtTime(new Date(end))}` : fmtTime(s);
+  }
+  return null;
+}
+
 export default function VenueDetailModal({ item, visible, onClose }: Props) {
   if (!item) return null;
 
   const name = isEvent(item) ? item.title : item.name;
   const description = isEvent(item) ? item.description : null;
-  const address = isEvent(item) ? item.venue_name : item.address;
+  // Events : adresse complète si dispo, sinon nom du lieu
+  const address = isEvent(item) ? (item.address ?? item.venue_name) : item.address;
   const url = isEvent(item) ? item.url : null;
   const lat = item.lat;
   const lng = item.lng;
+
+  // Champs enrichis (events uniquement)
+  const tags        = isEvent(item) ? item.tags : null;
+  const schedule    = isEvent(item) ? item.schedule_text : null;
+  const transport   = isEvent(item) ? item.transport : null;
+  const todaySlot   = isEvent(item) ? todayOccurrence(item.occurrences) : null;
+  // Avant validation de l'escapade : on SIGNALE la résa (badge) mais le
+  // bouton Réserver n'apparaît que sur l'écran plan, une fois validée
+  const needsResa   = isEvent(item) && item.access_type === 'obligatoire';
 
   function openMaps() {
     if (lat == null || lng == null) return;
@@ -81,9 +108,21 @@ export default function VenueDetailModal({ item, visible, onClose }: Props) {
           )}
 
           <View style={styles.content}>
-            {/* Badge catégorie */}
-            <View style={styles.badge}>
-              <Text style={styles.badgeText}>{categoryLabel(item.category)}</Text>
+            {/* Badges : catégorie + types source + résa */}
+            <View style={styles.badgeRow}>
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>{categoryLabel(item.category)}</Text>
+              </View>
+              {tags?.split(';').map(t => (
+                <View key={t} style={[styles.badge, styles.badgeTag]}>
+                  <Text style={styles.badgeText}>{t.trim()}</Text>
+                </View>
+              ))}
+              {needsResa && (
+                <View style={[styles.badge, styles.badgeResa]}>
+                  <Text style={styles.badgeResaText}>🎟 Résa obligatoire</Text>
+                </View>
+              )}
             </View>
 
             {/* Nom */}
@@ -108,15 +147,26 @@ export default function VenueDetailModal({ item, visible, onClose }: Props) {
                 </View>
               )}
 
-              {/* Dates (events uniquement) */}
+              {/* Horaires (events uniquement) */}
               {isEvent(item) && (
                 <View style={[styles.infoCard, styles.infoCardWide]}>
-                  <Text style={styles.infoIcon}>📅</Text>
+                  <Text style={styles.infoIcon}>🕐</Text>
                   <Text style={styles.infoLabel}>Horaires</Text>
-                  <Text style={styles.infoValue}>{formatDate(item.start_date)}</Text>
-                  {item.end_date && (
-                    <Text style={styles.infoValueSub}>→ {formatDate(item.end_date)}</Text>
+                  {/* Créneau du jour (événements récurrents) */}
+                  {todaySlot && (
+                    <Text style={styles.infoToday}>Aujourd'hui : {todaySlot}</Text>
                   )}
+                  {/* Horaires détaillés en clair (expos…) */}
+                  {schedule ? (
+                    <Text style={styles.infoValueSub}>{schedule}</Text>
+                  ) : !todaySlot ? (
+                    <>
+                      <Text style={styles.infoValue}>{formatDate(item.start_date)}</Text>
+                      {item.end_date && (
+                        <Text style={styles.infoValueSub}>→ {formatDate(item.end_date)}</Text>
+                      )}
+                    </>
+                  ) : null}
                 </View>
               )}
 
@@ -126,6 +176,17 @@ export default function VenueDetailModal({ item, visible, onClose }: Props) {
                   <Text style={styles.infoIcon}>📍</Text>
                   <Text style={styles.infoLabel}>Adresse</Text>
                   <Text style={styles.infoValue}>{address}</Text>
+                </View>
+              )}
+
+              {/* Transports (events uniquement) */}
+              {transport && (
+                <View style={[styles.infoCard, styles.infoCardWide]}>
+                  <Text style={styles.infoIcon}>🚇</Text>
+                  <Text style={styles.infoLabel}>Y aller</Text>
+                  {transport.split('\n').slice(0, 2).map((line, i) => (
+                    <Text key={i} style={styles.infoValueSub}>{line.replace('->', '·')}</Text>
+                  ))}
                 </View>
               )}
             </View>
@@ -199,6 +260,11 @@ const styles = StyleSheet.create({
     padding: 20,
     gap: 16,
   },
+  badgeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
   badge: {
     alignSelf: 'flex-start',
     backgroundColor: 'rgba(124,58,237,0.25)',
@@ -208,10 +274,31 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(124,58,237,0.5)',
   },
+  badgeTag: {
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderColor: 'rgba(255,255,255,0.15)',
+  },
+  badgeResa: {
+    backgroundColor: 'rgba(234,88,12,0.18)',
+    borderColor: 'rgba(234,88,12,0.5)',
+  },
+  badgeResaText: {
+    color: '#fb923c',
+    fontSize: 12,
+    fontWeight: '700',
+  },
   badgeText: {
     color: '#a78bfa',
     fontSize: 12,
     fontWeight: '700',
+  },
+  infoToday: {
+    color: '#4ade80',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  actionBtnResa: {
+    backgroundColor: '#EA580C',
   },
   name: {
     color: '#fff',

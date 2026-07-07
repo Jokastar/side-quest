@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { Venue, SpinEvent, UserPreferences } from '../types/database';
+import type { SpinMode } from '../components/SlotMachine';
 
 // ============================================================
 // Machine à états finis (FSM) — App Spin
@@ -62,6 +63,11 @@ interface GameState {
   spinningReel: ReelIndex | null;
   setSpinningReel: (index: ReelIndex | null) => void;
 
+  // Créneau du spin en cours (fixé au moment du spin) —
+  // lu par plan.tsx pour afficher la bonne timeline (midi/aprem/soirée)
+  spinMode: SpinMode;
+  setSpinMode: (mode: SpinMode) => void;
+
   // ID de l'escapade créée en DB après que l'user valide les 3 reels
   currentEscapadeId: string | null;
   setCurrentEscapadeId: (id: string) => void;
@@ -110,6 +116,9 @@ export const useGameStore = create<GameState>((set) => ({
 
   spinningReel: null,
   setSpinningReel: (index) => set({ spinningReel: index }),
+
+  spinMode: 'soiree',
+  setSpinMode: (mode) => set({ spinMode: mode }),
 
   currentEscapadeId: null,
   setCurrentEscapadeId: (id) => set({ currentEscapadeId: id }),

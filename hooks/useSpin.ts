@@ -2,6 +2,8 @@ import { useState, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { useGameStore, ReelIndex, ReelResult } from '../store/gameStore';
 import { getDistance } from './useProximityCheck';
+import { modeWindow, detectMode } from '../lib/timing';
+import type { SpinMode } from '../components/SlotMachine';
 import type { Venue, SpinEvent, UserPreferences } from '../types/database';
 
 // ============================================================
@@ -43,15 +45,8 @@ function venueMaxPriceLevel(maxPrice: number | null): number {
   return 3;
 }
 
-// Fenêtre d'accessibilité — alignée sur la sync (même journée) :
-// - endOfToday : l'event doit avoir commencé aujourd'hui au plus tard
-// - now        : pour vérifier que l'event n'est pas déjà terminé
-function getAccessibilityWindow(): { now: string; endOfToday: string } {
-  const now = new Date();
-  const endOfToday = new Date(now);
-  endOfToday.setHours(23, 59, 59, 999);
-  return { now: now.toISOString(), endOfToday: endOfToday.toISOString() };
-}
+// La fenêtre d'accessibilité des événements est celle du créneau choisi
+// (midi / après-midi / soirée) — voir lib/timing.ts
 
 // Calcule le score d'un candidat selon les préférences et la position de l'user
 function scoreCandidate(
@@ -128,10 +123,12 @@ export function useSpin() {
   // Fetch et sélectionne un résultat pour un reel donné.
   // Merge venues + events pour maximiser les candidats disponibles,
   // surtout quand la sync Google Places n'a pas encore tourné.
-  async function spinSingleReel(index: ReelIndex, retryWithoutMemory = false): Promise<ReelResult> {
+  async function spinSingleReel(index: ReelIndex, mode: SpinMode, retryWithoutMemory = false): Promise<ReelResult> {
     const category = REEL_CATEGORIES[index];
     const { maxPrice } = preferences;
-    const { now, endOfToday } = getAccessibilityWindow();
+    // L'événement doit être actif pendant le créneau choisi :
+    // commencé avant la fin du créneau ET pas terminé avant son début
+    const window = modeWindow(mode);
     const excluded = retryWithoutMemory ? [] : recentlyShown.current[index];
 
     // ── Venues (lieux permanents Google Places) ─────────────────
@@ -155,8 +152,9 @@ export function useSpin() {
         .from('events')
         .select('*')
         .eq('category', category)
-        .lte('start_date', endOfToday)
-        .or(`end_date.gt.${now},end_date.is.null`)
+        .eq('status', 'approved')   // curation : seuls les événements validés
+        .lte('start_date', window.end.toISOString())
+        .or(`end_date.gte.${window.start.toISOString()},end_date.is.null`)
         .lte('price', eventMaxPrice(maxPrice));
       if (excluded.length > 0) {
         eventQuery = eventQuery.not('id', 'in', `(${excluded.join(',')})`);
@@ -175,7 +173,7 @@ export function useSpin() {
 
     // Fallback : si aucun résultat avec anti-repeat, on réessaie sans la mémoire
     if (combined.length === 0) {
-      if (!retryWithoutMemory) return spinSingleReel(index, true);
+      if (!retryWithoutMemory) return spinSingleReel(index, mode, true);
       return null;
     }
 
@@ -194,9 +192,10 @@ export function useSpin() {
   }
 
   // Spin principal appelé depuis l'UI :
-  // - sans argument → spin des 3 reels (depuis HOME)
-  // - avec un index → re-spin d'un seul reel (depuis RESULTS)
-  async function spin(reelIndex?: ReelIndex) {
+  // - reelIndex absent → spin des 3 reels (depuis HOME)
+  // - reelIndex présent → re-spin d'un seul reel (depuis RESULTS)
+  // - mode : créneau choisi (défaut : selon l'heure actuelle)
+  async function spin(reelIndex?: ReelIndex, mode: SpinMode = detectMode()) {
     if (!userLocation) {
       setError('Position GPS non disponible.');
       return;
@@ -220,15 +219,15 @@ export function useSpin() {
       if (reelIndex !== undefined) {
         // Re-spin d'un seul reel
         setSpinningReel(reelIndex);
-        const result = await spinSingleReel(reelIndex);
+        const result = await spinSingleReel(reelIndex, mode);
         setReelResult(reelIndex, result);
       } else {
         // Spin des 3 reels en parallèle
         setSpinningReel(null);
         const [lieu, restaurant, ambiance] = await Promise.all([
-          spinSingleReel(0),
-          spinSingleReel(1),
-          spinSingleReel(2),
+          spinSingleReel(0, mode),
+          spinSingleReel(1, mode),
+          spinSingleReel(2, mode),
         ]);
         setReelResult(0, lieu);
         setReelResult(1, restaurant);

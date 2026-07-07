@@ -60,7 +60,9 @@ function getName(item: Venue | SpinEvent) {
   return isEvent(item) ? item.title : item.name;
 }
 function getAddress(item: Venue | SpinEvent) {
-  return isEvent(item) ? (item.venue_name ?? null) : item.address;
+  // Events : l'adresse complète (avec code postal → arrondissement du tampon),
+  // sinon le nom du lieu en secours
+  return isEvent(item) ? (item.address ?? item.venue_name ?? null) : item.address;
 }
 function getCoords(item: Venue | SpinEvent) {
   if (item.lat == null || item.lng == null) return null;
