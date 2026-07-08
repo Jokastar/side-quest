@@ -15,6 +15,8 @@
 
 ## 📋 Backlog MVP
 
+- [ ] **Rebranding** — "Spin" et le thème 🎰 machine à sous ne collent plus au pivot (composer sa journée en swipant). Nouveau nom à trouver (idées à creuser), puis renommer : titre home, tagline, onboarding splash, admin ("Spin Admin"), doc.
+
 - [ ] **Gemini : restaurer la vraie validation** — le prompt accepte tout (mode test). Remettre la validation par catégorie (CATEGORY_HINTS existe déjà dans checkin.tsx) avant de montrer l'app.
 - [ ] **États d'erreur / vides** — GPS refusé, reels vides, hors ligne. Les reviewers testent toujours ça.
 - [ ] **Badges (3-4)** — "Premier Spin", "Coup de Dés", "Streak x3". Tables prêtes, il manque le seed + le check d'attribution après check-in.

@@ -9,28 +9,31 @@ import {
   Linking,
   Platform,
 } from 'react-native';
-import type { Venue, SpinEvent } from '../types/database';
+import type { Item } from '../types/database';
 
 interface Props {
-  item: Venue | SpinEvent | null;
+  item: Item | null;
   visible: boolean;
   onClose: () => void;
 }
 
-function isEvent(item: Venue | SpinEvent): item is SpinEvent {
-  return 'title' in item;
-}
-
-function priceLabel(item: Venue | SpinEvent): string {
-  if (isEvent(item)) {
-    return item.price === 0 ? 'Gratuit' : `${item.price} €`;
-  }
+// Prix : euros pour les éphémères, niveau €/€€/€€€ pour les permanents
+function priceLabel(item: Item): string {
+  if (item.price != null) return item.price === 0 ? 'Gratuit' : `${item.price} €`;
   const map: Record<number, string> = { 1: '€', 2: '€€', 3: '€€€' };
   return item.price_level != null ? map[item.price_level] ?? '—' : '—';
 }
 
 function categoryLabel(cat: string): string {
-  return { lieu: '🎭 Lieu', restaurant: '🍽️ Restaurant', ambiance: '🎶 Sortie' }[cat] ?? cat;
+  return {
+    culture:   '🎭 Culture',
+    loisir:    '🎳 Loisir',
+    plein_air: '🌳 Plein air',
+    food:      '🍽️ Food',
+    bar:       '🍸 Bar',
+    club:      '🪩 Club',
+    concert:   '🎶 Concert',
+  }[cat] ?? cat;
 }
 
 function formatDate(iso: string): string {
@@ -59,22 +62,11 @@ function todayOccurrence(occurrences: string | null): string | null {
 export default function VenueDetailModal({ item, visible, onClose }: Props) {
   if (!item) return null;
 
-  const name = isEvent(item) ? item.title : item.name;
-  const description = isEvent(item) ? item.description : null;
-  // Events : adresse complète si dispo, sinon nom du lieu
-  const address = isEvent(item) ? (item.address ?? item.venue_name) : item.address;
-  const url = isEvent(item) ? item.url : null;
-  const lat = item.lat;
-  const lng = item.lng;
-
-  // Champs enrichis (events uniquement)
-  const tags        = isEvent(item) ? item.tags : null;
-  const schedule    = isEvent(item) ? item.schedule_text : null;
-  const transport   = isEvent(item) ? item.transport : null;
-  const todaySlot   = isEvent(item) ? todayOccurrence(item.occurrences) : null;
+  const { name, description, address, url, lat, lng, tags, schedule_text: schedule, transport } = item;
+  const todaySlot = todayOccurrence(item.occurrences);
   // Avant validation de l'escapade : on SIGNALE la résa (badge) mais le
   // bouton Réserver n'apparaît que sur l'écran plan, une fois validée
-  const needsResa   = isEvent(item) && item.access_type === 'obligatoire';
+  const needsResa = item.access_type === 'obligatoire';
 
   function openMaps() {
     if (lat == null || lng == null) return;
@@ -138,8 +130,8 @@ export default function VenueDetailModal({ item, visible, onClose }: Props) {
                 <Text style={styles.infoValue}>{priceLabel(item)}</Text>
               </View>
 
-              {/* Rating (venues uniquement) */}
-              {!isEvent(item) && item.rating != null && (
+              {/* Note (si renseignée) */}
+              {item.rating != null && (
                 <View style={styles.infoCard}>
                   <Text style={styles.infoIcon}>⭐</Text>
                   <Text style={styles.infoLabel}>Note</Text>
@@ -147,19 +139,17 @@ export default function VenueDetailModal({ item, visible, onClose }: Props) {
                 </View>
               )}
 
-              {/* Horaires (events uniquement) */}
-              {isEvent(item) && (
+              {/* Horaires — créneau du jour, horaires en clair, ou dates de l'éphémère */}
+              {(todaySlot || schedule || item.start_date) && (
                 <View style={[styles.infoCard, styles.infoCardWide]}>
                   <Text style={styles.infoIcon}>🕐</Text>
                   <Text style={styles.infoLabel}>Horaires</Text>
-                  {/* Créneau du jour (événements récurrents) */}
                   {todaySlot && (
                     <Text style={styles.infoToday}>Aujourd'hui : {todaySlot}</Text>
                   )}
-                  {/* Horaires détaillés en clair (expos…) */}
                   {schedule ? (
                     <Text style={styles.infoValueSub}>{schedule}</Text>
-                  ) : !todaySlot ? (
+                  ) : !todaySlot && item.start_date ? (
                     <>
                       <Text style={styles.infoValue}>{formatDate(item.start_date)}</Text>
                       {item.end_date && (

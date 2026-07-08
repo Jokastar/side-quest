@@ -1,6 +1,6 @@
 // Calcule la distance exacte entre deux coordonnées GPS en mètres
 // Utilise la formule de Haversine qui tient compte de la courbure de la Terre
-// Utilisé par checkin.tsx (proximité des stops) et useSpin.ts (scoring distance)
+// Utilisé par checkin.tsx (proximité des stops) et useItemLists.ts (scoring distance)
 export function getDistance(
   lat1: number, lon1: number,
   lat2: number, lon2: number,

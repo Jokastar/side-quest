@@ -40,7 +40,14 @@ function getLevelInfo(xp: number) {
 
 // ── Stamp design tokens ───────────────────────────────────────
 
-const CATEGORY_INK: Record<string, { color: string; emoji: string; label: string }> = {
+// Encre du tampon selon le slot de l'étape.
+// Les clés legacy (lieu/restaurant/ambiance) restent pour les tampons
+// frappés avant la migration vers le modèle unifié.
+const SLOT_INK: Record<string, { color: string; emoji: string; label: string }> = {
+  activite:   { color: '#7C3AED', emoji: '🏛️', label: 'ACTIVITÉ' },
+  table:      { color: '#EA580C', emoji: '🍽️', label: 'TABLE' },
+  sortie:     { color: '#DB2777', emoji: '🎶', label: 'SORTIE' },
+  // legacy
   lieu:       { color: '#7C3AED', emoji: '🏛️', label: 'LIEU' },
   restaurant: { color: '#EA580C', emoji: '🍽️', label: 'TABLE' },
   ambiance:   { color: '#DB2777', emoji: '🎶', label: 'SORTIE' },
@@ -71,7 +78,7 @@ function Perforation({ horizontal, count }: { horizontal: boolean; count: number
 // ── The postage stamp itself ──────────────────────────────────
 
 function StampCard({ stamp }: { stamp: Stamp }) {
-  const ink    = CATEGORY_INK[stamp.category] ?? CATEGORY_INK.lieu;
+  const ink    = SLOT_INK[stamp.slot] ?? SLOT_INK.activite;
   const rarity = RARITY_STYLE[stamp.rarity] ?? RARITY_STYLE.common;
   const date   = new Date(stamp.earned_at).toLocaleDateString('fr-FR', {
     day: '2-digit', month: 'short', year: '2-digit',

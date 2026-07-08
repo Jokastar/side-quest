@@ -22,7 +22,7 @@ import { useRouter } from 'expo-router';
 import { useGameStore } from '../store/gameStore';
 import { supabase } from '../lib/supabase';
 import { getDistance } from '../hooks/useProximityCheck';
-import type { Venue, SpinEvent } from '../types/database';
+import type { Item } from '../types/database';
 
 // ── Constants ─────────────────────────────────────────────────
 
@@ -34,9 +34,9 @@ const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY ?? '';
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent';
 
 const STOP_CONFIG = [
-  { emoji: '🎭', label: 'Lieu',   color: '#7C3AED', stamp: '🏛️' },
-  { emoji: '🍽️', label: 'Table',  color: '#EA580C', stamp: '🍽️' },
-  { emoji: '🎶', label: 'Sortie', color: '#DB2777', stamp: '🎶' },
+  { emoji: '🎭', label: 'Activité', color: '#7C3AED', stamp: '🏛️' },
+  { emoji: '🍽️', label: 'Table',    color: '#EA580C', stamp: '🍽️' },
+  { emoji: '🎶', label: 'Sortie',   color: '#DB2777', stamp: '🎶' },
 ];
 
 // ── Types ──────────────────────────────────────────────────────
@@ -53,23 +53,12 @@ interface StopState {
 
 // ── Item helpers ───────────────────────────────────────────────
 
-function isEvent(item: Venue | SpinEvent): item is SpinEvent {
-  return 'title' in item;
-}
-function getName(item: Venue | SpinEvent) {
-  return isEvent(item) ? item.title : item.name;
-}
-function getAddress(item: Venue | SpinEvent) {
-  // Events : l'adresse complète (avec code postal → arrondissement du tampon),
-  // sinon le nom du lieu en secours
-  return isEvent(item) ? (item.address ?? item.venue_name ?? null) : item.address;
-}
-function getCoords(item: Venue | SpinEvent) {
+function getCoords(item: Item) {
   if (item.lat == null || item.lng == null) return null;
   return { latitude: item.lat, longitude: item.lng };
 }
 
-// Parses the arrondissement (1–20) from a Paris postal code in the address.
+// Secours si l'item n'a pas d'arrondissement en base :
 // "12 Rue de Rivoli, 75004 Paris" → 4
 function parseArrondissement(address: string | null): number | null {
   if (!address) return null;
@@ -97,10 +86,15 @@ function extractGpsFromExif(exif: Record<string, unknown>): { latitude: number; 
 
 // ── Gemini photo validation ────────────────────────────────────
 
+// Indices visuels par catégorie pour la future vraie validation Gemini
 const CATEGORY_HINTS: Record<string, string> = {
-  lieu:       "un musée, galerie, monument ou lieu culturel (œuvres d'art, architecture, panneau d'exposition, façade historique)",
-  restaurant: "un restaurant, café ou bar (table dressée, plat servi, comptoir, salle, menu, terrasse)",
-  ambiance:   "une sortie nocturne : concert, club, bar ou spectacle (scène, foule, lumières de soirée, dancefloor, DJ, ambiance festive)",
+  culture:   "un musée, galerie, monument, expo ou théâtre (œuvres, architecture, panneau d'exposition, façade historique)",
+  loisir:    "une activité fun : bowling, escape game, karaoké, arcade (pistes, décors, écrans, matériel de jeu)",
+  plein_air: "un lieu en extérieur : parc, jardin, balade, guinguette (verdure, allées, plein air)",
+  food:      "un restaurant ou café (table dressée, plat servi, comptoir, salle, menu, terrasse)",
+  bar:       "un bar, rooftop ou cave à vin (comptoir, verres, bouteilles, ambiance tamisée)",
+  club:      "une boîte de nuit (dancefloor, jeux de lumière, DJ, foule qui danse)",
+  concert:   "un concert ou spectacle (scène, artistes, public, lumières de scène)",
 };
 
 async function validateWithGemini(
@@ -131,19 +125,31 @@ Réponds UNIQUEMENT avec ce JSON (sans markdown) :
     ]}],
   });
 
-  // Retry x3 with backoff on transient 5xx errors
+  // Retry x4 avec backoff sur les erreurs 5xx (surcharge transitoire)
   let res: Response | null = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    res = await fetch(`${GEMINI_URL}?key=${GEMINI_API_KEY}`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-    });
-    if (res.ok || res.status < 500) break;
-    await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      res = await fetch(`${GEMINI_URL}?key=${GEMINI_API_KEY}`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+      if (res.ok || res.status < 500) break;
+    } catch {
+      // erreur réseau : on retente comme un 5xx
+    }
+    await new Promise(r => setTimeout(r, 1500 * (attempt + 1))); // 1.5s, 3s, 4.5s
   }
 
-  if (!res?.ok) throw new Error(`Gemini ${res?.status ?? 'no response'}`);
+  // Gemini indisponible (surcharge/panne) → on ACCEPTE plutôt que de
+  // bloquer le tampon : la photo est un bonus, pas un mur.
+  if (!res || res.status >= 500) {
+    console.warn('[gemini] indisponible après retries, photo acceptée par défaut');
+    return { valid: true, reason: 'Validation indisponible — photo acceptée.' };
+  }
+  // 4xx = vrai problème de requête (clé, quota…) : on le remonte
+  if (!res.ok) throw new Error(`Gemini ${res.status}`);
+
   const data    = await res.json();
   const raw     = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
   const cleaned = raw.replace(/```json\n?|\n?```/g, '').trim();
@@ -157,17 +163,16 @@ Réponds UNIQUEMENT avec ce JSON (sans markdown) :
 async function mintStamp(
   userId:   string,
   escapadeId: string | null,
-  stop:     Venue | SpinEvent,
-  category: 'lieu' | 'restaurant' | 'ambiance',
+  stop:     Item,
 ): Promise<boolean> {
   const { error } = await supabase.from('stamps').insert({
     user_id:        userId,
     escapade_id:    escapadeId,
-    venue_id:       stop.id,
-    category,
-    venue_name:     getName(stop),
-    arrondissement: parseArrondissement(getAddress(stop)),
-    rarity:         !isEvent(stop) ? stop.rarity : 'common',
+    item_id:        stop.id,
+    slot:           stop.slot,       // pilote le design du tampon
+    venue_name:     stop.name,
+    arrondissement: stop.arrondissement ?? parseArrondissement(stop.address),
+    rarity:         stop.rarity,
     photo_url:      stop.photo_url ?? null,
   });
 
@@ -210,7 +215,7 @@ export default function CheckinScreen() {
   const router = useRouter();
   const { reelResults, userLocation, currentEscapadeId, completeEscapade, resetEscapade } = useGameStore();
 
-  const stops = reelResults.filter(Boolean) as (Venue | SpinEvent)[];
+  const stops = reelResults.filter(Boolean) as Item[];
 
   const [stopStates, setStopStates] = useState<StopState[]>(
     stops.map(() => ({ status: 'pending', xp: 0, error: null, geminiSaw: null })),
@@ -224,7 +229,7 @@ export default function CheckinScreen() {
     });
   }
 
-  function distanceTo(stop: Venue | SpinEvent): number | null {
+  function distanceTo(stop: Item): number | null {
     const coords = getCoords(stop);
     if (!coords || !userLocation) return null;
     return getDistance(
@@ -309,10 +314,8 @@ export default function CheckinScreen() {
         }
       }
 
-      // 2. Gemini checks the photo matches the venue category
-      const category = (stop.category ?? (i === 1 ? 'restaurant' : i === 2 ? 'ambiance' : 'lieu')) as
-        'lieu' | 'restaurant' | 'ambiance';
-      const result = await validateWithGemini(asset.uri, getName(stop), category);
+      // 2. Gemini checks the photo matches the item's category
+      const result = await validateWithGemini(asset.uri, stop.name, stop.category);
 
       if (!result.valid) {
         updateStop(i, {
@@ -326,7 +329,7 @@ export default function CheckinScreen() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Not authenticated');
 
-      const minted = await mintStamp(user.id, currentEscapadeId, stop, category);
+      const minted = await mintStamp(user.id, currentEscapadeId, stop);
       if (!minted) {
         updateStop(i, { status: 'gps_ok', error: 'Erreur de sauvegarde du tampon. Réessaie.' });
         return;
@@ -408,9 +411,9 @@ export default function CheckinScreen() {
                     <Text style={[styles.cardLabel, { color: cfg.color }]}>
                       {cfg.emoji}  {cfg.label.toUpperCase()}
                     </Text>
-                    <Text style={styles.cardName} numberOfLines={2}>{getName(stop)}</Text>
-                    {getAddress(stop) && (
-                      <Text style={styles.cardAddress} numberOfLines={1}>{getAddress(stop)}</Text>
+                    <Text style={styles.cardName} numberOfLines={2}>{stop.name}</Text>
+                    {stop.address && (
+                      <Text style={styles.cardAddress} numberOfLines={1}>{stop.address}</Text>
                     )}
                   </View>
                   {state.status === 'done'    && <StampBadge emoji={cfg.stamp} color={cfg.color} />}

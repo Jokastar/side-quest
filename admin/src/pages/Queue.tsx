@@ -1,36 +1,54 @@
 // ─────────────────────────────────────────────────────────────
-// Queue — la file de curation des événements
+// Queue — la file de curation des items (modèle unifié)
 //
-// 3 onglets : En attente / Approuvés / Rejetés
-// Actions par carte : approuver, rejeter, restaurer, changer la
-// catégorie. Header : compteurs + bouton "Lancer une sync".
+// 3 onglets de statut : En attente / Approuvés / Rejetés
+// Filtre par nature : Tous / Éphémères / Permanents
+// Actions par carte : approuver, rejeter, restaurer,
+// corriger le slot (rouleau) et la catégorie.
 // ─────────────────────────────────────────────────────────────
 
 import { useCallback, useEffect, useState } from 'react';
-import { supabase, type AdminEvent, type EventStatus } from '../lib/supabase';
+import {
+  supabase,
+  type AdminItem, type ItemStatus, type Slot, type Category,
+} from '../lib/supabase';
 
-const TABS: { key: EventStatus; label: string; emoji: string }[] = [
+const TABS: { key: ItemStatus; label: string; emoji: string }[] = [
   { key: 'pending',  label: 'En attente', emoji: '📥' },
   { key: 'approved', label: 'Approuvés',  emoji: '✅' },
   { key: 'rejected', label: 'Rejetés',    emoji: '🚫' },
 ];
 
-const CATEGORIES: AdminEvent['category'][] = ['lieu', 'restaurant', 'ambiance'];
+type NatureFilter = 'all' | 'ephemere' | 'permanent';
 
-const CATEGORY_STYLE: Record<string, { color: string; label: string }> = {
-  lieu:       { color: '#7C3AED', label: '🎭 Lieu' },
-  restaurant: { color: '#EA580C', label: '🍽️ Table' },
-  ambiance:   { color: '#DB2777', label: '🎶 Sortie' },
+const SLOTS: Slot[] = ['activite', 'table', 'sortie'];
+const SLOT_STYLE: Record<Slot, { color: string; label: string }> = {
+  activite: { color: '#7C3AED', label: '🎭 Activité' },
+  table:    { color: '#EA580C', label: '🍽️ Table' },
+  sortie:   { color: '#DB2777', label: '🎶 Sortie' },
 };
+
+const CATEGORIES: Category[] = ['culture', 'loisir', 'plein_air', 'food', 'bar', 'club', 'concert'];
+const CATEGORY_LABEL: Record<Category, string> = {
+  culture: 'Culture', loisir: 'Loisir', plein_air: 'Plein air',
+  food: 'Food', bar: 'Bar', club: 'Club', concert: 'Concert',
+};
+
+function priceLabel(item: AdminItem): string {
+  if (item.price != null) return item.price === 0 ? 'Gratuit' : `${item.price}€`;
+  if (item.price_level != null) return '€'.repeat(item.price_level);
+  return '—';
+}
 
 interface QueueProps {
   onLogout: () => void;
 }
 
 export default function Queue({ onLogout }: QueueProps) {
-  const [tab, setTab] = useState<EventStatus>('pending');
-  const [events, setEvents] = useState<AdminEvent[]>([]);
-  const [counts, setCounts] = useState<Record<EventStatus, number>>({ pending: 0, approved: 0, rejected: 0 });
+  const [tab, setTab] = useState<ItemStatus>('pending');
+  const [nature, setNature] = useState<NatureFilter>('all');
+  const [items, setItems] = useState<AdminItem[]>([]);
+  const [counts, setCounts] = useState<Record<ItemStatus, number>>({ pending: 0, approved: 0, rejected: 0 });
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [search, setSearch] = useState('');
@@ -38,44 +56,48 @@ export default function Queue({ onLogout }: QueueProps) {
   const load = useCallback(async () => {
     setLoading(true);
 
+    let listQuery = supabase.from('items').select('*').eq('status', tab)
+      .order('start_date', { ascending: true, nullsFirst: false });
+    if (nature !== 'all') listQuery = listQuery.eq('nature', nature);
+
     // Liste de l'onglet actif + compteurs des 3 statuts en parallèle
     const [listRes, ...countRes] = await Promise.all([
-      supabase.from('events').select('*').eq('status', tab).order('start_date'),
+      listQuery,
       ...TABS.map(t =>
-        supabase.from('events').select('*', { count: 'exact', head: true }).eq('status', t.key),
+        supabase.from('items').select('*', { count: 'exact', head: true }).eq('status', t.key),
       ),
     ]);
 
-    setEvents((listRes.data ?? []) as AdminEvent[]);
+    setItems((listRes.data ?? []) as AdminItem[]);
     setCounts({
       pending:  countRes[0].count ?? 0,
       approved: countRes[1].count ?? 0,
       rejected: countRes[2].count ?? 0,
     });
     setLoading(false);
-  }, [tab]);
+  }, [tab, nature]);
 
   useEffect(() => { load(); }, [load]);
 
   // ── Actions ────────────────────────────────────────────────
 
-  async function setStatus(id: string, status: EventStatus) {
+  async function setStatus(id: string, status: ItemStatus) {
     // Optimiste : on retire la carte tout de suite, rollback si erreur
-    const prev = events;
-    setEvents(evts => evts.filter(e => e.id !== id));
+    const prev = items;
+    setItems(list => list.filter(i => i.id !== id));
     setCounts(c => ({ ...c, [tab]: c[tab] - 1, [status]: c[status] + 1 }));
 
-    const { error } = await supabase.from('events').update({ status }).eq('id', id);
+    const { error } = await supabase.from('items').update({ status }).eq('id', id);
     if (error) {
       alert(`Erreur : ${error.message}`);
-      setEvents(prev);
+      setItems(prev);
       load();
     }
   }
 
-  async function setCategory(id: string, category: AdminEvent['category']) {
-    setEvents(evts => evts.map(e => (e.id === id ? { ...e, category } : e)));
-    const { error } = await supabase.from('events').update({ category }).eq('id', id);
+  async function patchItem(id: string, patch: Partial<Pick<AdminItem, 'slot' | 'category'>>) {
+    setItems(list => list.map(i => (i.id === id ? { ...i, ...patch } : i)));
+    const { error } = await supabase.from('items').update(patch).eq('id', id);
     if (error) { alert(`Erreur : ${error.message}`); load(); }
   }
 
@@ -86,7 +108,7 @@ export default function Queue({ onLogout }: QueueProps) {
     setSyncing(false);
     if (error) alert(`Sync échouée : ${error.message}`);
     else {
-      alert(`Sync OK — ${data?.events ?? '?'} événements, ${data?.venues ?? '?'} venues`);
+      alert(`Sync OK — ${data?.ephemeres ?? '?'} éphémères, ${data?.permanents ?? '?'} permanents`);
       load();
     }
   }
@@ -94,11 +116,11 @@ export default function Queue({ onLogout }: QueueProps) {
   // ── Rendu ──────────────────────────────────────────────────
 
   const filtered = search
-    ? events.filter(e =>
-        (e.title + ' ' + (e.venue_name ?? '') + ' ' + (e.description ?? ''))
+    ? items.filter(i =>
+        (i.name + ' ' + (i.address ?? '') + ' ' + (i.description ?? ''))
           .toLowerCase().includes(search.toLowerCase()),
       )
-    : events;
+    : items;
 
   return (
     <div className="queue">
@@ -113,7 +135,7 @@ export default function Queue({ onLogout }: QueueProps) {
         </div>
       </header>
 
-      {/* Tabs */}
+      {/* Tabs statut */}
       <nav className="tabs">
         {TABS.map(t => (
           <button
@@ -127,32 +149,43 @@ export default function Queue({ onLogout }: QueueProps) {
         ))}
       </nav>
 
-      {/* Search */}
-      <input
-        className="search"
-        placeholder="Rechercher (titre, lieu, description)…"
-        value={search}
-        onChange={e => setSearch(e.target.value)}
-      />
+      {/* Filtre nature + recherche */}
+      <div className="filter-row">
+        <select
+          className="nature-select"
+          value={nature}
+          onChange={e => setNature(e.target.value as NatureFilter)}
+        >
+          <option value="all">Tous</option>
+          <option value="ephemere">⏳ Éphémères</option>
+          <option value="permanent">🏛 Permanents</option>
+        </select>
+        <input
+          className="search"
+          placeholder="Rechercher (nom, adresse, description)…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+      </div>
 
       {/* Liste */}
       {loading ? (
         <p className="muted center-text">Chargement…</p>
       ) : filtered.length === 0 ? (
         <p className="muted center-text">
-          {tab === 'pending' ? '🎉 File vide — tout est traité !' : 'Aucun événement.'}
+          {tab === 'pending' ? '🎉 File vide — tout est traité !' : 'Aucun item.'}
         </p>
       ) : (
         <div className="cards">
-          {filtered.map(e => (
-            <EventCard
-              key={e.id}
-              event={e}
+          {filtered.map(i => (
+            <ItemCard
+              key={i.id}
+              item={i}
               tab={tab}
-              onApprove={() => setStatus(e.id, 'approved')}
-              onReject={() => setStatus(e.id, 'rejected')}
-              onRestore={() => setStatus(e.id, 'pending')}
-              onCategory={c => setCategory(e.id, c)}
+              onApprove={() => setStatus(i.id, 'approved')}
+              onReject={() => setStatus(i.id, 'rejected')}
+              onRestore={() => setStatus(i.id, 'pending')}
+              onPatch={patch => patchItem(i.id, patch)}
             />
           ))}
         </div>
@@ -161,83 +194,93 @@ export default function Queue({ onLogout }: QueueProps) {
   );
 }
 
-// ── Carte événement ───────────────────────────────────────────
+// ── Carte item ────────────────────────────────────────────────
 
-interface EventCardProps {
-  event: AdminEvent;
-  tab: EventStatus;
+interface ItemCardProps {
+  item: AdminItem;
+  tab: ItemStatus;
   onApprove: () => void;
   onReject: () => void;
   onRestore: () => void;
-  onCategory: (c: AdminEvent['category']) => void;
+  onPatch: (patch: Partial<Pick<AdminItem, 'slot' | 'category'>>) => void;
 }
 
-function EventCard({ event, tab, onApprove, onReject, onRestore, onCategory }: EventCardProps) {
-  const cat = CATEGORY_STYLE[event.category];
-  const dates = formatDates(event.start_date, event.end_date);
+function ItemCard({ item, tab, onApprove, onReject, onRestore, onPatch }: ItemCardProps) {
+  const slotStyle = SLOT_STYLE[item.slot];
+  const dates = item.start_date ? formatDates(item.start_date, item.end_date) : null;
+  const today = todayOccurrence(item.occurrences);
 
   return (
     <div className="card">
-      {event.photo_url
-        ? <img className="card-photo" src={event.photo_url} alt="" loading="lazy" />
-        : <div className="card-photo placeholder">🎪</div>}
+      {item.photo_url
+        ? <img className="card-photo" src={item.photo_url} alt="" loading="lazy" />
+        : <div className="card-photo placeholder">{item.nature === 'permanent' ? '🏛' : '🎪'}</div>}
 
       <div className="card-body">
         <div className="card-top">
-          <select
-            className="category-select"
-            style={{ color: cat.color, borderColor: cat.color + '55' }}
-            value={event.category}
-            onChange={e => onCategory(e.target.value as AdminEvent['category'])}
-          >
-            {CATEGORIES.map(c => (
-              <option key={c} value={c}>{CATEGORY_STYLE[c].label}</option>
-            ))}
-          </select>
+          <span className="selects">
+            {/* Rouleau (routage) */}
+            <select
+              className="category-select"
+              style={{ color: slotStyle.color, borderColor: slotStyle.color + '55' }}
+              value={item.slot}
+              onChange={e => onPatch({ slot: e.target.value as Slot })}
+            >
+              {SLOTS.map(s => (
+                <option key={s} value={s}>{SLOT_STYLE[s].label}</option>
+              ))}
+            </select>
+            {/* Catégorie (classification) */}
+            <select
+              className="category-select"
+              value={item.category}
+              onChange={e => onPatch({ category: e.target.value as Category })}
+            >
+              {CATEGORIES.map(c => (
+                <option key={c} value={c}>{CATEGORY_LABEL[c]}</option>
+              ))}
+            </select>
+          </span>
           <span className="badges-inline">
-            {!event.is_indoor && <span className="badge outdoor">🌳 Extérieur</span>}
-            {event.access_type === 'obligatoire' && <span className="badge resa">🎟 Résa obligatoire</span>}
-            <span className="price">{event.price === 0 ? 'Gratuit' : `${event.price}€`}</span>
+            <span className={item.nature === 'permanent' ? 'badge perm' : 'badge eph'}>
+              {item.nature === 'permanent' ? '🏛 Permanent' : '⏳ Éphémère'}
+            </span>
+            {!item.is_indoor && <span className="badge outdoor">🌳 Extérieur</span>}
+            {item.access_type === 'obligatoire' && <span className="badge resa">🎟 Résa obligatoire</span>}
+            <span className="price">{priceLabel(item)}</span>
           </span>
         </div>
 
-        <h3>{event.title}</h3>
+        <h3>{item.name}</h3>
 
-        {/* Types source (Expo, Concert, Balade…) */}
-        {event.tags && (
+        {/* Labels source (Expo, Concert, Balade…) */}
+        {item.tags && (
           <div className="tags">
-            {event.tags.split(';').map(t => (
+            {item.tags.split(';').map(t => (
               <span key={t} className="tag">{t.trim()}</span>
             ))}
           </div>
         )}
 
-        {(event.venue_name || event.address) && (
-          <p className="venue">
-            📍 {event.venue_name}{event.venue_name && event.address ? ' · ' : ''}{event.address}
-          </p>
+        {item.address && <p className="venue">📍 {item.address}</p>}
+        {item.transport && (
+          <p className="venue">🚇 {item.transport.split('\n')[0].replace('->', '·')}</p>
         )}
-        {/* Première ligne de transport (métro le plus proche) */}
-        {event.transport && (
-          <p className="venue">🚇 {event.transport.split('\n')[0].replace('->', '·')}</p>
+        {dates && <p className="dates">🗓 {dates}</p>}
+        {today && <p className="dates today">🕐 Aujourd'hui : {today}</p>}
+        {item.schedule_text && (
+          <p className="schedule">🕐 {item.schedule_text}</p>
         )}
-        <p className="dates">🗓 {dates}</p>
-        {todayOccurrence(event.occurrences) && (
-          <p className="dates today">🕐 Aujourd'hui : {todayOccurrence(event.occurrences)}</p>
-        )}
-        {/* Horaires en clair (date_description de l'API) — le plus utile pour les expos */}
-        {event.schedule_text && (
-          <p className="schedule">🕐 {event.schedule_text}</p>
-        )}
-        {event.description && <p className="desc">{event.description}</p>}
+        {item.description && <p className="desc">{item.description}</p>}
+
         <div className="links">
-          {event.url && (
-            <a className="link" href={event.url} target="_blank" rel="noreferrer">
+          {item.url && (
+            <a className="link" href={item.url} target="_blank" rel="noreferrer">
               Voir la page source ↗
             </a>
           )}
-          {event.access_link && (
-            <a className="link" href={event.access_link} target="_blank" rel="noreferrer">
+          {item.access_link && (
+            <a className="link" href={item.access_link} target="_blank" rel="noreferrer">
               Lien de réservation ↗
             </a>
           )}
@@ -303,7 +346,6 @@ function formatDates(start: string, end: string | null): string {
   // Jour unique sans fin → "7 juil. 2026 · 19h00"
   if (!e) return fmtDate(s) + (hasTime(s) ? ` · ${fmtTime(s)}` : '');
 
-  // Période (expo, festival…) → dates seules, l'heure de début
-  // d'il y a 3 mois n'a aucun sens affichée seule
+  // Période (expo, festival…) → dates seules
   return `${fmtDate(s)} → ${fmtDate(e)}`;
 }

@@ -14,15 +14,18 @@ import { supabase } from '../lib/supabase';
 const STALE_AFTER_MS = 6 * 60 * 60 * 1000; // 6h
 
 // Vérifie si les données sont périmées (dernière sync > 6h)
+// On regarde les éphémères uniquement : les permanents curés à la main
+// n'ont pas de fraîcheur à surveiller
 async function isDataStale(): Promise<boolean> {
   const { data } = await supabase
-    .from('events')
+    .from('items')
     .select('cached_at')
+    .eq('nature', 'ephemere')
     .order('cached_at', { ascending: false })
     .limit(1)
     .single();
 
-  if (!data) return true; // table vide → périmée
+  if (!data) return true; // aucun éphémère → périmé
 
   const lastSync = new Date(data.cached_at).getTime();
   return Date.now() - lastSync > STALE_AFTER_MS;

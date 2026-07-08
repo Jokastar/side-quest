@@ -1,39 +1,36 @@
 import { create } from 'zustand';
-import type { Venue, SpinEvent, UserPreferences } from '../types/database';
-import type { SpinMode } from '../components/SlotMachine';
+import type { Item, UserPreferences } from '../types/database';
+import type { SpinMode } from '../lib/timing';
 
 // ============================================================
 // Machine à états finis (FSM) — App Spin
 // ============================================================
 //
-//  ONBOARDING → HOME → SPINNING → RESULTS → PLAN → CHECKIN → COMPLETED
-//                 ▲       │           │        │
-//                 │       │     (re-spin reel) │
-//                 │       └──────────►◄────────┘
-//                 └──────────────────────────────── resetEscapade
+//  ONBOARDING → HOME → PLAN → CHECKIN → COMPLETED
+//                 ▲
+//                 └──────────── resetEscapade (depuis n'importe où)
 //
 //  ONBOARDING  → premier lancement, choix des préférences
-//  HOME        → écran principal, machine à sous prête
-//  SPINNING    → animation des reels en cours (1.5-2s)
-//  RESULTS     → 3 cartes affichées, l'user peut relancer un reel
+//  HOME        → composer son escapade (3 rangées swipables)
 //  PLAN        → plan d'escapade : timeline + carte + liens
-//  CHECKIN     → vérification GPS sur place + photo optionnelle
-//  COMPLETED   → escapade validée, affichage des XP gagnés
+//  CHECKIN     → validation sur place + tampons
+//  COMPLETED   → escapade terminée
+//
+// (Les étapes SPINNING/RESULTS ont disparu avec la machine à sous :
+//  la sélection se fait directement sur l'accueil.)
 
 export type AppStage =
   | 'ONBOARDING'
   | 'HOME'
-  | 'SPINNING'
-  | 'RESULTS'
   | 'PLAN'
   | 'CHECKIN'
   | 'COMPLETED';
 
-// Un reel peut être en train de spinner indépendamment des autres
-export type ReelIndex = 0 | 1 | 2; // 0 = lieu, 1 = restaurant, 2 = ambiance
+// Index des 3 rangées : 0 = activité, 1 = table, 2 = sortie
+export type ReelIndex = 0 | 1 | 2;
 
-// Résultat d'un spin : venue (Google Places) ou event (Paris Open Data / Eventbrite)
-export type ReelResult = Venue | SpinEvent | null;
+// La sélection d'une rangée : un item (permanent ou éphémère), ou rien
+export type ReelResult = Item | null;
 
 interface LocationCoords {
   latitude: number;
@@ -54,35 +51,27 @@ interface GameState {
   hasOnboarded: boolean | null;
   setHasOnboarded: (done: boolean) => void;
 
-  // ── Résultats des 3 reels ─────────────────────────────────
-  // Index 0 = lieu, 1 = restaurant, 2 = ambiance
+  // ── Sélection des 3 rangées ───────────────────────────────
   reelResults: [ReelResult, ReelResult, ReelResult];
   setReelResult: (index: ReelIndex, result: ReelResult) => void;
 
-  // Quel reel est en train de spinner (null = aucun)
-  spinningReel: ReelIndex | null;
-  setSpinningReel: (index: ReelIndex | null) => void;
-
-  // Créneau du spin en cours (fixé au moment du spin) —
-  // lu par plan.tsx pour afficher la bonne timeline (midi/aprem/soirée)
+  // Créneau de l'escapade en cours (fixé à la validation) —
+  // lu par plan.tsx pour afficher la bonne timeline
   spinMode: SpinMode;
   setSpinMode: (mode: SpinMode) => void;
 
-  // ID de l'escapade créée en DB après que l'user valide les 3 reels
+  // ID de l'escapade créée en DB à la validation
   currentEscapadeId: string | null;
   setCurrentEscapadeId: (id: string) => void;
 
   // ── FSM ───────────────────────────────────────────────────
   stage: AppStage;
 
-  // Transitions
-  finishOnboarding: () => void;          // ONBOARDING → HOME
-  startSpin: (reel?: ReelIndex) => void; // HOME/RESULTS → SPINNING
-  showResults: () => void;               // SPINNING → RESULTS
-  goToPlan: () => void;                  // RESULTS → PLAN
-  startCheckin: () => void;              // PLAN → CHECKIN
-  completeEscapade: () => void;           // CHECKIN → COMPLETED
-  resetEscapade: () => void;               // COMPLETED/n'importe → HOME (nouvelle escapade)
+  finishOnboarding: () => void;   // ONBOARDING → HOME
+  goToPlan: () => void;           // HOME → PLAN
+  startCheckin: () => void;       // PLAN → CHECKIN
+  completeEscapade: () => void;   // CHECKIN → COMPLETED
+  resetEscapade: () => void;      // n'importe où → HOME (nouvelle escapade)
 }
 
 export const useGameStore = create<GameState>((set) => ({
@@ -105,7 +94,7 @@ export const useGameStore = create<GameState>((set) => ({
   hasOnboarded: null,
   setHasOnboarded: (done) => set({ hasOnboarded: done }),
 
-  // ── Reels ─────────────────────────────────────────────────
+  // ── Sélection ─────────────────────────────────────────────
   reelResults: [null, null, null],
   setReelResult: (index, result) =>
     set((state) => {
@@ -113,9 +102,6 @@ export const useGameStore = create<GameState>((set) => ({
       updated[index] = result;
       return { reelResults: updated };
     }),
-
-  spinningReel: null,
-  setSpinningReel: (index) => set({ spinningReel: index }),
 
   spinMode: 'soiree',
   setSpinMode: (mode) => set({ spinMode: mode }),
@@ -126,39 +112,21 @@ export const useGameStore = create<GameState>((set) => ({
   // ── FSM ───────────────────────────────────────────────────
   stage: 'ONBOARDING',
 
-  // L'onboarding est terminé → on arrive sur l'écran principal
   finishOnboarding: () => set({ stage: 'HOME' }),
 
-  // Lance un spin :
-  // - sans paramètre → spin des 3 reels depuis HOME
-  // - avec un index  → re-spin d'un seul reel depuis RESULTS
-  startSpin: (reel) => set((state) => {
-    if (state.stage !== 'HOME' && state.stage !== 'RESULTS') return state;
-    return {
-      stage: 'SPINNING',
-      spinningReel: reel ?? null,
-    };
-  }),
-
-  // Animation terminée → on affiche les 3 cartes résultats
-  showResults: () => set((state) => {
-    if (state.stage !== 'SPINNING') return state;
-    return { stage: 'RESULTS', spinningReel: null };
-  }),
-
-  // L'user valide les 3 reels → plan d'escapade
+  // L'utilisateur valide sa sélection → plan d'escapade
   goToPlan: () => set((state) => {
-    if (state.stage !== 'RESULTS') return state;
+    if (state.stage !== 'HOME') return state;
     return { stage: 'PLAN' };
   }),
 
-  // L'user démarre son escapade → écran de check-in GPS
+  // L'utilisateur démarre son escapade → écran de check-in
   startCheckin: () => set((state) => {
     if (state.stage !== 'PLAN') return state;
     return { stage: 'CHECKIN' };
   }),
 
-  // Check-in validé → modal de récompense XP
+  // Au moins un tampon frappé → escapade terminée
   completeEscapade: () => set((state) => {
     if (state.stage !== 'CHECKIN') return state;
     return { stage: 'COMPLETED' };
@@ -168,7 +136,6 @@ export const useGameStore = create<GameState>((set) => ({
   resetEscapade: () => set({
     stage: 'HOME',
     reelResults: [null, null, null],
-    spinningReel: null,
     currentEscapadeId: null,
   }),
 }));

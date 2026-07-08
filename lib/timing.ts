@@ -1,10 +1,11 @@
-import type { SpinMode } from '../components/SlotMachine';
+// Créneau horaire d'une escapade (ex-"SpinMode", conservé comme nom de type)
+export type SpinMode = 'midi' | 'journee' | 'soiree';
 
 // ─────────────────────────────────────────────────────────────
 // Créneaux horaires des modes de spin.
 // Source de vérité unique — utilisée par :
 //   - le sélecteur de créneau (index.tsx) : désactiver les créneaux passés
-//   - le spin (useSpin.ts) : ne proposer que des événements actifs
+//   - les listes (useItemLists.ts) : ne proposer que des items actifs
 //     pendant le créneau choisi
 //
 // La soirée se termine à 3h du matin → end = 27 (heures "étendues").

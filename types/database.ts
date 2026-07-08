@@ -2,7 +2,35 @@ export type Json = string | number | boolean | null | { [key: string]: Json | un
 
 // ============================================================
 // Schéma Supabase — App Spin
+//
+// Modèle unifié : la table `items` contient tout ce qui est
+// "spinnable" à Paris — lieux permanents ET événements éphémères.
+//   nature   : permanent (resto, musée, bar) | ephemere (concert, expo)
+//   slot     : dans quel rouleau de la machine ça peut tomber
+//   category : ce que c'est vraiment (classification riche)
 // ============================================================
+
+// ── Enums du modèle ──────────────────────────────────────────
+
+// Un item existe tous les jours, ou bien il a des dates
+export type ItemNature = 'permanent' | 'ephemere';
+
+// Routage : le rouleau de la machine à sous
+// activite = "découvre un endroit" · table = "mange" · sortie = "finis la soirée"
+export type Slot = 'activite' | 'table' | 'sortie';
+
+// Classification riche — extensible sans toucher à la machine
+export type Category =
+  | 'culture'    // musées, expos, monuments, théâtre        → activite
+  | 'loisir'     // bowling, escape game, karaoké            → activite
+  | 'plein_air'  // parcs, balades, guinguettes              → activite
+  | 'food'       // restos, brunchs, crêperies               → table
+  | 'bar'        // bars, rooftops, caves à vin              → sortie
+  | 'club'       // boîtes, dancefloors                      → sortie
+  | 'concert';   // musique live, festivals, spectacles      → sortie
+
+export type ItemStatus = 'pending' | 'approved' | 'rejected';
+export type Rarity = 'common' | 'rare' | 'epic' | 'legendary';
 
 export interface Database {
   public: {
@@ -20,6 +48,7 @@ export interface Database {
           streak_count: number;
           streak_freezes: number;
           streak_last_checkin: string | null;
+          is_admin: boolean;
           created_at: string;
         };
         Insert: {
@@ -47,206 +76,174 @@ export interface Database {
         Relationships: [];
       };
 
-      // Cache des lieux Google Places (musées, restos, bars, etc.)
-      // Chaque venue appartient à un reel : 'lieu' | 'restaurant' | 'ambiance'
-      venues: {
+      // ═══ LA table : tout ce qui peut sortir d'un spin ═══════
+      items: {
         Row: {
           id: string;
-          google_place_id: string;
-          name: string;
-          address: string;
-          category: 'lieu' | 'restaurant' | 'ambiance';
-          lat: number;
-          lng: number;
-          price_level: number | null;   // 1 = €, 2 = €€, 3 = €€€
-          rating: number | null;
-          photo_url: string | null;
-          rarity: 'common' | 'rare' | 'epic' | 'legendary';
-          is_active: boolean;
-          cached_at: string;
-        };
-        Insert: {
-          id?: string;
-          google_place_id: string;
-          name: string;
-          address: string;
-          category: 'lieu' | 'restaurant' | 'ambiance';
-          lat: number;
-          lng: number;
-          price_level?: number | null;
-          rating?: number | null;
-          photo_url?: string | null;
-          rarity?: 'common' | 'rare' | 'epic' | 'legendary';
-          is_active?: boolean;
-          cached_at?: string;
-        };
-        Update: {
-          name?: string;
-          address?: string;
-          price_level?: number | null;
-          rating?: number | null;
-          photo_url?: string | null;
-          rarity?: 'common' | 'rare' | 'epic' | 'legendary';
-          is_active?: boolean;
-          cached_at?: string;
-        };
-        Relationships: [];
-      };
+          nature: ItemNature;
+          slot: Slot;
+          category: Category;
 
-      // Cache des événements Paris Open Data + Eventbrite
-      // Rafraîchi toutes les 6h par une Supabase Edge Function
-      // Curation : la sync insère en 'pending' (défaut DB), seuls les
-      // événements passés en 'approved' apparaissent dans les reels
-      events: {
-        Row: {
-          id: string;
-          source: 'paris_opendata' | 'eventbrite';
-          external_id: string;
-          title: string;
+          name: string;
           description: string | null;
-          category: 'lieu' | 'restaurant' | 'ambiance';
-          venue_name: string | null;
+          photo_url: string | null;
+
+          address: string | null;
+          arrondissement: number | null;   // 1 à 20
           lat: number | null;
           lng: number | null;
-          start_date: string;
-          end_date: string | null;
-          price: number;              // 0 = gratuit
+          transport: string | null;        // "Métro · 8 : Chemin Vert (272m)…"
+
+          price: number | null;            // en euros (éphémères, 0 = gratuit)
+          price_level: number | null;      // 1-3 (permanents)
+          rating: number | null;
+          schedule_text: string | null;    // horaires en clair
+          access_type: string | null;      // 'obligatoire' | 'conseillé' | null
+          access_link: string | null;      // lien de réservation
           url: string | null;
-          photo_url: string | null;
-          tags: string | null;          // types source, ex: "Expo;Histoire"
-          occurrences: string | null;   // créneaux précis "start_end;start_end;…"
-          schedule_text: string | null; // horaires en clair ("dimanche de 11h à 20h…")
-          address: string | null;       // adresse complète avec code postal
-          transport: string | null;     // "Métro -> 8 : Chemin Vert (272m)…"
-          access_type: string | null;   // 'obligatoire' | 'conseillé' | null
-          access_link: string | null;   // lien de réservation
-          is_indoor: boolean;           // intérieur / extérieur
-          status: 'pending' | 'approved' | 'rejected';
+          is_indoor: boolean;
+          tags: string | null;             // labels source bruts "Expo;Histoire"
+
+          // Temporel — éphémères uniquement (null pour les permanents)
+          start_date: string | null;
+          end_date: string | null;
+          occurrences: string | null;      // "start_end;start_end;…"
+
+          // Curation & jeu
+          status: ItemStatus;
+          rarity: Rarity;
+          is_active: boolean;
+
+          // Traçabilité
+          source: 'admin' | 'paris_opendata' | 'google_places';
+          external_id: string | null;      // UNIQUE(source, external_id)
           cached_at: string;
+          created_at: string;
         };
         Insert: {
           id?: string;
-          source: 'paris_opendata' | 'eventbrite';
-          external_id: string;
-          title: string;
+          nature: ItemNature;
+          slot: Slot;
+          category: Category;
+          name: string;
           description?: string | null;
-          category: 'lieu' | 'restaurant' | 'ambiance';
-          venue_name?: string | null;
+          photo_url?: string | null;
+          address?: string | null;
+          arrondissement?: number | null;
           lat?: number | null;
           lng?: number | null;
-          start_date: string;
-          end_date?: string | null;
-          price?: number;
-          url?: string | null;
-          photo_url?: string | null;
-          tags?: string | null;
-          occurrences?: string | null;
-          schedule_text?: string | null;
-          address?: string | null;
           transport?: string | null;
+          price?: number | null;
+          price_level?: number | null;
+          rating?: number | null;
+          schedule_text?: string | null;
           access_type?: string | null;
           access_link?: string | null;
+          url?: string | null;
           is_indoor?: boolean;
-          status?: 'pending' | 'approved' | 'rejected';
+          tags?: string | null;
+          start_date?: string | null;
+          end_date?: string | null;
+          occurrences?: string | null;
+          status?: ItemStatus;
+          rarity?: Rarity;
+          is_active?: boolean;
+          source: 'admin' | 'paris_opendata' | 'google_places';
+          external_id?: string | null;
           cached_at?: string;
+          created_at?: string;
         };
         Update: {
-          title?: string;
+          nature?: ItemNature;
+          slot?: Slot;
+          category?: Category;
+          name?: string;
           description?: string | null;
-          venue_name?: string | null;
-          start_date?: string;
-          end_date?: string | null;
-          price?: number;
-          url?: string | null;
           photo_url?: string | null;
-          tags?: string | null;
-          occurrences?: string | null;
-          schedule_text?: string | null;
           address?: string | null;
+          arrondissement?: number | null;
+          lat?: number | null;
+          lng?: number | null;
           transport?: string | null;
+          price?: number | null;
+          price_level?: number | null;
+          rating?: number | null;
+          schedule_text?: string | null;
           access_type?: string | null;
           access_link?: string | null;
+          url?: string | null;
           is_indoor?: boolean;
-          status?: 'pending' | 'approved' | 'rejected';
+          tags?: string | null;
+          start_date?: string | null;
+          end_date?: string | null;
+          occurrences?: string | null;
+          status?: ItemStatus;
+          rarity?: Rarity;
+          is_active?: boolean;
           cached_at?: string;
         };
         Relationships: [];
       };
 
-      // Une escapade générée = 1 lieu + 1 restaurant + 1 ambiance
-      // status : generated (affiché) → accepted (validé par user) → completed (check-in fait)
-      // Les refs sont nullables : les reels lieu/ambiance peuvent être
-      // des venues OU des events, on ne remplit que la colonne du bon type
+      // Une escapade validée. Ses étapes vivent dans escapade_items
+      // (modèle flexible : 3 stops aujourd'hui, N demain, curées, partagées…)
       escapades: {
         Row: {
           id: string;
           user_id: string;
-          venue_id: string | null;       // reel 1 : lieu (si venue)
-          restaurant_id: string | null;  // reel 2 : restaurant (venue)
-          event_id: string | null;       // reel 1 ou 3 (si event)
+          title: string | null;        // pour les escapades curées/partagées
+          is_curated: boolean;         // créée par l'admin, mise en avant
           status: 'generated' | 'accepted' | 'completed';
           created_at: string;
         };
         Insert: {
           id?: string;
           user_id: string;
-          venue_id?: string | null;
-          restaurant_id?: string | null;
-          event_id?: string | null;
+          title?: string | null;
+          is_curated?: boolean;
           status?: 'generated' | 'accepted' | 'completed';
           created_at?: string;
         };
         Update: {
+          title?: string | null;
           status?: 'generated' | 'accepted' | 'completed';
         };
         Relationships: [];
       };
 
-      // Check-in GPS sur place pour valider une escapade
-      // gps_verified = true si l'user était à < 150m du lieu
-      // photo_url remplie si l'user a pris une photo (+30% XP)
-      checkins: {
+      // Les étapes d'une escapade, ordonnées
+      escapade_items: {
         Row: {
           id: string;
-          user_id: string;
           escapade_id: string;
-          venue_id: string;
-          gps_verified: boolean;
-          photo_url: string | null;
-          rating: number | null;   // note 1 à 3
-          checked_in_at: string;
+          item_id: string;
+          position: number;            // 1, 2, 3…
         };
         Insert: {
           id?: string;
-          user_id: string;
-          escapade_id?: string | null;
-          venue_id?: string | null;
-          gps_verified?: boolean;
-          photo_url?: string | null;
-          rating?: number | null;
-          checked_in_at?: string;
+          escapade_id: string;
+          item_id: string;
+          position: number;
         };
         Update: {
-          gps_verified?: boolean;
-          photo_url?: string | null;
-          rating?: number | null;
+          position?: number;
         };
         Relationships: [];
       };
 
-      // Tampons collectionnés par l'utilisateur (carnet de voyage)
+      // Tampons collectionnés (carnet de voyage)
       // Créé UNIQUEMENT après validation complète : GPS + photo + Gemini
-      // Les infos du lieu sont dénormalisées : le tampon survit à la suppression du venue
+      // Les infos sont dénormalisées : le tampon survit à la suppression de l'item
       stamps: {
         Row: {
           id: string;
           user_id: string;
           escapade_id: string | null;
-          venue_id: string | null;
-          category: 'lieu' | 'restaurant' | 'ambiance';
+          item_id: string | null;          // soft ref (l'item peut disparaître)
+          slot: Slot;                      // pilote le design du tampon
           venue_name: string;
           arrondissement: number | null;   // 1 à 20
-          rarity: 'common' | 'rare' | 'epic' | 'legendary';
+          rarity: Rarity;
           photo_url: string | null;
           earned_at: string;
         };
@@ -254,16 +251,15 @@ export interface Database {
           id?: string;
           user_id: string;
           escapade_id?: string | null;
-          venue_id?: string | null;
-          category: 'lieu' | 'restaurant' | 'ambiance';
+          item_id?: string | null;
+          slot: Slot;
           venue_name: string;
           arrondissement?: number | null;
-          rarity?: 'common' | 'rare' | 'epic' | 'legendary';
+          rarity?: Rarity;
           photo_url?: string | null;
           earned_at?: string;
         };
-        // Un tampon ne se modifie jamais — Record<string, never> plutôt que never
-        // pour rester compatible avec la contrainte GenericTable de supabase-js
+        // Un tampon ne se modifie jamais
         Update: Record<string, never>;
         Relationships: [];
       };
@@ -324,13 +320,23 @@ export interface Database {
 
 // ── Raccourcis pour les types les plus utilisés ──────────────
 export type User = Database['public']['Tables']['users']['Row'];
-export type Venue = Database['public']['Tables']['venues']['Row'];
-export type SpinEvent = Database['public']['Tables']['events']['Row'];
+export type Item = Database['public']['Tables']['items']['Row'];
 export type Escapade = Database['public']['Tables']['escapades']['Row'];
-export type Checkin = Database['public']['Tables']['checkins']['Row'];
+export type EscapadeItem = Database['public']['Tables']['escapade_items']['Row'];
 export type Stamp = Database['public']['Tables']['stamps']['Row'];
 export type Badge = Database['public']['Tables']['badges']['Row'];
 export type UserBadge = Database['public']['Tables']['user_badges']['Row'];
+
+// Mapping catégorie → rouleau (dérivation automatique à la création)
+export const CATEGORY_TO_SLOT: Record<Category, Slot> = {
+  culture:   'activite',
+  loisir:    'activite',
+  plein_air: 'activite',
+  food:      'table',
+  bar:       'sortie',
+  club:      'sortie',
+  concert:   'sortie',
+};
 
 // Préférences utilisateur (persistées en SecureStore, définies à l'onboarding)
 export type Vibe = 'chill' | 'festif' | 'culturel';

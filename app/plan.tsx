@@ -6,29 +6,14 @@ import {
 import MapView, { Marker, Polyline } from 'react-native-maps';
 import { useRouter } from 'expo-router';
 import { useGameStore } from '../store/gameStore';
-import type { Venue, SpinEvent } from '../types/database';
+import type { Item } from '../types/database';
 
 // ── Helpers ──────────────────────────────────────────────────
+// Le modèle unifié rend les accès directs : plus de branchement venue/event
 
-function isEvent(item: Venue | SpinEvent): item is SpinEvent {
-  return 'title' in item;
-}
-
-function getName(item: Venue | SpinEvent) {
-  return isEvent(item) ? item.title : item.name;
-}
-
-function getAddress(item: Venue | SpinEvent) {
-  return isEvent(item) ? (item.address ?? item.venue_name ?? null) : item.address;
-}
-
-function getCoords(item: Venue | SpinEvent) {
+function getCoords(item: Item) {
   if (item.lat == null || item.lng == null) return null;
   return { latitude: item.lat, longitude: item.lng };
-}
-
-function getDescription(item: Venue | SpinEvent): string | null {
-  return isEvent(item) ? (item.description ?? null) : null;
 }
 
 const TIME_SLOTS: Record<string, string[]> = {
@@ -38,14 +23,14 @@ const TIME_SLOTS: Record<string, string[]> = {
 };
 
 const STOP_CONFIG = [
-  { emoji: '🎭', label: 'Lieu',   color: '#7C3AED' },
-  { emoji: '🍽️', label: 'Table',  color: '#EA580C' },
-  { emoji: '🎶', label: 'Sortie', color: '#DB2777' },
+  { emoji: '🎭', label: 'Activité', color: '#7C3AED' },
+  { emoji: '🍽️', label: 'Table',    color: '#EA580C' },
+  { emoji: '🎶', label: 'Sortie',   color: '#DB2777' },
 ];
 
 // Ouvre Google Maps vers UN seul lieu depuis la position de l'user
 function openSingleStop(
-  stop: Venue | SpinEvent,
+  stop: Item,
   travelMode: 'bicycling' | 'transit',
   userLocation: { latitude: number; longitude: number } | null,
 ) {
@@ -62,7 +47,7 @@ function openSingleStop(
 
 // Ouvre Google Maps avec l'itinéraire complet depuis la position de l'user
 function openFullRoute(
-  stops: (Venue | SpinEvent)[],
+  stops: Item[],
   travelMode: 'bicycling' | 'transit',
   userLocation: { latitude: number; longitude: number } | null,
 ) {
@@ -124,7 +109,7 @@ function MapPin({ number, color, emoji }: { number: number; color: string; emoji
 // ── Modal détail d'un stop ────────────────────────────────────
 
 interface StopModalProps {
-  stop: Venue | SpinEvent;
+  stop: Item;
   stopIndex: number;
   userLocation: { latitude: number; longitude: number } | null;
   onClose: () => void;
@@ -132,18 +117,17 @@ interface StopModalProps {
 
 function StopModal({ stop, stopIndex, userLocation, onClose }: StopModalProps) {
   const cfg = STOP_CONFIG[stopIndex];
-  const name = getName(stop);
-  const address = getAddress(stop);
-  const description = getDescription(stop);
+  const name = stop.name;
+  const address = stop.address;
+  const description = (stop.description ?? null);
   const coords = getCoords(stop);
 
-  // Champs enrichis (events uniquement) — l'escapade est validée ici,
+  // Champs enrichis — l'escapade est validée ici,
   // donc le bouton Réserver a sa place
-  const isEvt       = isEvent(stop);
-  const schedule    = isEvt ? stop.schedule_text : null;
-  const transport   = isEvt ? stop.transport : null;
-  const needsResa   = isEvt && stop.access_type === 'obligatoire';
-  const bookingLink = isEvt ? stop.access_link : null;
+  const schedule    = stop.schedule_text;
+  const transport   = stop.transport;
+  const needsResa   = stop.access_type === 'obligatoire';
+  const bookingLink = stop.access_link;
 
   return (
     <Modal
@@ -261,7 +245,7 @@ export default function PlanScreen() {
   const [selectedStopIndex, setSelectedStopIndex] = useState<number | null>(null);
   const userLocation = useGameStore((s) => s.userLocation);
 
-  const stops = reelResults.filter(Boolean) as (Venue | SpinEvent)[];
+  const stops = reelResults.filter(Boolean) as Item[];
   const timeSlots = TIME_SLOTS[mode];
 
   const validCoords = stops.map(getCoords).filter(Boolean) as { latitude: number; longitude: number }[];
@@ -334,7 +318,8 @@ export default function PlanScreen() {
         <View style={styles.timeline}>
           {stops.map((stop, i) => {
             const cfg = STOP_CONFIG[i];
-            const time = isEvent(stop) && stop.start_date
+            // Un éphémère avec un horaire précis l'affiche ; sinon le créneau type
+            const time = stop.start_date
               ? new Date(stop.start_date).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
               : timeSlots[i];
 
@@ -365,9 +350,9 @@ export default function PlanScreen() {
                       </Text>
                       <Text style={styles.stepTime}>{time}</Text>
                     </View>
-                    <Text style={styles.stepName} numberOfLines={2}>{getName(stop)}</Text>
-                    {getAddress(stop) && (
-                      <Text style={styles.stepAddress} numberOfLines={1}>{getAddress(stop)}</Text>
+                    <Text style={styles.stepName} numberOfLines={2}>{stop.name}</Text>
+                    {stop.address && (
+                      <Text style={styles.stepAddress} numberOfLines={1}>{stop.address}</Text>
                     )}
                     <Text style={styles.stepTap}>Appuyer pour y aller →</Text>
                   </View>
