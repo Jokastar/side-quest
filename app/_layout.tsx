@@ -1,11 +1,22 @@
+// ─────────────────────────────────────────────────────────────
+// Racine de l'app — monté UNE fois au démarrage. Séquence :
+//
+//   1. Charge les préférences + le drapeau onboarding (SecureStore)
+//      et hydrate le store Zustand
+//   2. Restaure la session Supabase (JWT stocké sur l'appareil)
+//   3. L'AuthGuard route selon l'état :
+//        pas de session            → /login
+//        session, pas onboardé     → /onboarding
+//        session + onboardé        → / (accueil)
+//   4. Le Stack déclare les écrans (un fichier app/ = une route)
+// ─────────────────────────────────────────────────────────────
+
 import '../global.css';
 import { useEffect, useState, Component, ReactNode } from 'react';
 import { View, ActivityIndicator, Text, ScrollView } from 'react-native';
 import { Stack, useRouter, useSegments } from 'expo-router';
-import { QueryClientProvider } from '@tanstack/react-query';
 import { Session } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
-import { queryClient } from '../lib/queryClient';
 import { loadStoredPrefs } from '../lib/prefsStorage';
 import { useGameStore } from '../store/gameStore';
 
@@ -97,18 +108,18 @@ export default function RootLayout() {
 
   return (
     <ErrorBoundary>
-      {/* QueryClientProvider rend React Query disponible dans toute l'app */}
-      <QueryClientProvider client={queryClient}>
-        <AuthGuard session={session} />
-        <Stack screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="login" />
-          <Stack.Screen name="onboarding" />
-          <Stack.Screen name="index" />
-          <Stack.Screen name="plan" />
-          <Stack.Screen name="checkin" />
-          <Stack.Screen name="profile" />
-        </Stack>
-      </QueryClientProvider>
+      {/* AuthGuard ne rend rien : il observe la session + l'onboarding
+          et redirige vers le bon écran quand l'un des deux change */}
+      <AuthGuard session={session} />
+      {/* Le Stack déclare tous les écrans de l'app (un fichier app/ = un écran) */}
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="login" />
+        <Stack.Screen name="onboarding" />
+        <Stack.Screen name="index" />
+        <Stack.Screen name="plan" />
+        <Stack.Screen name="checkin" />
+        <Stack.Screen name="profile" />
+      </Stack>
     </ErrorBoundary>
   );
 }

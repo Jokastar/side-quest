@@ -1,32 +1,23 @@
 import { useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
-  StyleSheet, SafeAreaView, Linking, Image, Modal, Platform,
+  StyleSheet, Linking, Image, Modal, Platform,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import MapView, { Marker, Polyline } from 'react-native-maps';
 import { useRouter } from 'expo-router';
 import { useGameStore } from '../store/gameStore';
-import type { Item } from '../types/database';
+import { getCoords, timeBadge } from '../lib/items';
+import { sortChronologically, DEFAULT_STOP_HOURS } from '../lib/timing';
+import type { Item, Slot } from '../types/database';
 
-// ── Helpers ──────────────────────────────────────────────────
-// Le modèle unifié rend les accès directs : plus de branchement venue/event
-
-function getCoords(item: Item) {
-  if (item.lat == null || item.lng == null) return null;
-  return { latitude: item.lat, longitude: item.lng };
-}
-
-const TIME_SLOTS: Record<string, string[]> = {
-  soiree:  ['20h00', '21h30', '23h00'],
-  midi:    ['12h00', '13h00', '14h30'],
-  journee: ['15h00', '17h00', '19h00'],
+// La sélection est libre (n'importe quel mix de types) →
+// la config visuelle d'un stop dépend de son SLOT, pas de sa position
+const SLOT_CONFIG: Record<Slot, { emoji: string; label: string; color: string }> = {
+  activite: { emoji: '🎭', label: 'Activité', color: '#7C3AED' },
+  table:    { emoji: '🍽️', label: 'Table',    color: '#EA580C' },
+  sortie:   { emoji: '🎶', label: 'Sortie',   color: '#DB2777' },
 };
-
-const STOP_CONFIG = [
-  { emoji: '🎭', label: 'Activité', color: '#7C3AED' },
-  { emoji: '🍽️', label: 'Table',    color: '#EA580C' },
-  { emoji: '🎶', label: 'Sortie',   color: '#DB2777' },
-];
 
 // Ouvre Google Maps vers UN seul lieu depuis la position de l'user
 function openSingleStop(
@@ -116,7 +107,7 @@ interface StopModalProps {
 }
 
 function StopModal({ stop, stopIndex, userLocation, onClose }: StopModalProps) {
-  const cfg = STOP_CONFIG[stopIndex];
+  const cfg = SLOT_CONFIG[stop.slot];
   const name = stop.name;
   const address = stop.address;
   const description = (stop.description ?? null);
@@ -237,17 +228,24 @@ function StopModal({ stop, stopIndex, userLocation, onClose }: StopModalProps) {
 }
 
 // ── Écran principal ───────────────────────────────────────────
+// Le plan de l'escapade validée : carte avec les pins, timeline
+// horaire, itinéraires Google Maps, et le bouton qui lance le check-in.
+// Les données viennent du store (sélection faite sur l'accueil).
 
 export default function PlanScreen() {
   const router = useRouter();
-  const { reelResults, resetEscapade, startCheckin, spinMode: mode } = useGameStore();
+  const { selection, resetEscapade, startCheckin, spinMode: mode } = useGameStore();
 
+  // Quel stop est ouvert dans le modal bas de page (null = fermé)
   const [selectedStopIndex, setSelectedStopIndex] = useState<number | null>(null);
   const userLocation = useGameStore((s) => s.userLocation);
 
-  const stops = reelResults.filter(Boolean) as Item[];
-  const timeSlots = TIME_SLOTS[mode];
+  // L'itinéraire est CHRONOLOGIQUE : les items à heure fixe (concert 20h30)
+  // ancrent la timeline, les flexibles (expo, resto) se placent à l'heure
+  // par défaut de leur type dans le créneau choisi
+  const stops = sortChronologically(selection, mode);
 
+  // Cadre la carte pour englober tous les pins
   const validCoords = stops.map(getCoords).filter(Boolean) as { latitude: number; longitude: number }[];
   const region = getRegion(validCoords);
 
@@ -280,7 +278,7 @@ export default function PlanScreen() {
                   anchor={{ x: 0.5, y: 1 }}
                   onPress={() => setSelectedStopIndex(i)}
                 >
-                  <MapPin number={i + 1} color={STOP_CONFIG[i].color} emoji={STOP_CONFIG[i].emoji} />
+                  <MapPin number={i + 1} color={SLOT_CONFIG[stop.slot].color} emoji={SLOT_CONFIG[stop.slot].emoji} />
                 </Marker>
               );
             })}
@@ -317,11 +315,10 @@ export default function PlanScreen() {
         {/* Timeline */}
         <View style={styles.timeline}>
           {stops.map((stop, i) => {
-            const cfg = STOP_CONFIG[i];
-            // Un éphémère avec un horaire précis l'affiche ; sinon le créneau type
-            const time = stop.start_date
-              ? new Date(stop.start_date).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
-              : timeSlots[i];
+            const cfg = SLOT_CONFIG[stop.slot];
+            // Heure réelle de l'item si connue (concert 20h30),
+            // sinon l'heure par défaut de son type dans ce créneau
+            const time = timeBadge(stop) ?? DEFAULT_STOP_HOURS[mode][stop.slot].label;
 
             return (
               <TouchableOpacity

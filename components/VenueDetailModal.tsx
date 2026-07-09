@@ -9,7 +9,8 @@ import {
   Linking,
   Platform,
 } from 'react-native';
-import type { Item } from '../types/database';
+import { priceLabel, todayOccurrence, CATEGORY_LABEL_EMOJI } from '../lib/items';
+import type { Item, Category } from '../types/database';
 
 interface Props {
   item: Item | null;
@@ -17,46 +18,14 @@ interface Props {
   onClose: () => void;
 }
 
-// Prix : euros pour les éphémères, niveau €/€€/€€€ pour les permanents
-function priceLabel(item: Item): string {
-  if (item.price != null) return item.price === 0 ? 'Gratuit' : `${item.price} €`;
-  const map: Record<number, string> = { 1: '€', 2: '€€', 3: '€€€' };
-  return item.price_level != null ? map[item.price_level] ?? '—' : '—';
-}
-
-function categoryLabel(cat: string): string {
-  return {
-    culture:   '🎭 Culture',
-    loisir:    '🎳 Loisir',
-    plein_air: '🌳 Plein air',
-    food:      '🍽️ Food',
-    bar:       '🍸 Bar',
-    club:      '🪩 Club',
-    concert:   '🎶 Concert',
-  }[cat] ?? cat;
+function categoryLabel(cat: Category): string {
+  return CATEGORY_LABEL_EMOJI[cat] ?? cat;
 }
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString('fr-FR', {
     weekday: 'short', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit',
   });
-}
-
-// Créneau d'AUJOURD'HUI dans la liste "start_end;start_end;…" → "18h00 – 20h00"
-function todayOccurrence(occurrences: string | null): string | null {
-  if (!occurrences) return null;
-  const todayKey = new Date().toDateString();
-  const fmtTime = (d: Date) =>
-    d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }).replace(':', 'h');
-
-  for (const slot of occurrences.split(';')) {
-    const [start, end] = slot.split('_');
-    if (!start) continue;
-    const s = new Date(start);
-    if (s.toDateString() !== todayKey) continue;
-    return end ? `${fmtTime(s)} – ${fmtTime(new Date(end))}` : fmtTime(s);
-  }
-  return null;
 }
 
 export default function VenueDetailModal({ item, visible, onClose }: Props) {

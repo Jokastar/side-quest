@@ -14,14 +14,17 @@
 import { useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
-  StyleSheet, SafeAreaView, ActivityIndicator, Linking,
+  StyleSheet, ActivityIndicator, Linking,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { useRouter } from 'expo-router';
 import { useGameStore } from '../store/gameStore';
 import { supabase } from '../lib/supabase';
 import { getDistance } from '../hooks/useProximityCheck';
+import { getCoords, parseArrondissement } from '../lib/items';
+import { sortChronologically } from '../lib/timing';
 import type { Item } from '../types/database';
 
 // ── Constants ─────────────────────────────────────────────────
@@ -33,11 +36,13 @@ const XP_PHOTO = 30;
 const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY ?? '';
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent';
 
-const STOP_CONFIG = [
-  { emoji: '🎭', label: 'Activité', color: '#7C3AED', stamp: '🏛️' },
-  { emoji: '🍽️', label: 'Table',    color: '#EA580C', stamp: '🍽️' },
-  { emoji: '🎶', label: 'Sortie',   color: '#DB2777', stamp: '🎶' },
-];
+// La sélection est libre (n'importe quel mix de types) →
+// la config visuelle d'un stop dépend de son SLOT, pas de sa position
+const SLOT_CONFIG = {
+  activite: { emoji: '🎭', label: 'Activité', color: '#7C3AED', stamp: '🏛️' },
+  table:    { emoji: '🍽️', label: 'Table',    color: '#EA580C', stamp: '🍽️' },
+  sortie:   { emoji: '🎶', label: 'Sortie',   color: '#DB2777', stamp: '🎶' },
+} as const;
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -49,23 +54,6 @@ interface StopState {
   xp:        number;
   error:     string | null;
   geminiSaw: string | null;  // description de la photo par Gemini (affichée après validation)
-}
-
-// ── Item helpers ───────────────────────────────────────────────
-
-function getCoords(item: Item) {
-  if (item.lat == null || item.lng == null) return null;
-  return { latitude: item.lat, longitude: item.lng };
-}
-
-// Secours si l'item n'a pas d'arrondissement en base :
-// "12 Rue de Rivoli, 75004 Paris" → 4
-function parseArrondissement(address: string | null): number | null {
-  if (!address) return null;
-  const match = address.match(/750(\d{2})/);
-  if (!match) return null;
-  const arr = parseInt(match[1], 10);
-  return arr >= 1 && arr <= 20 ? arr : null;
 }
 
 // ── EXIF GPS extraction ────────────────────────────────────────
@@ -213,9 +201,10 @@ function StampBadge({ emoji, color }: { emoji: string; color: string }) {
 
 export default function CheckinScreen() {
   const router = useRouter();
-  const { reelResults, userLocation, currentEscapadeId, completeEscapade, resetEscapade } = useGameStore();
+  const { selection, spinMode, userLocation, currentEscapadeId, completeEscapade, resetEscapade } = useGameStore();
 
-  const stops = reelResults.filter(Boolean) as Item[];
+  // Même ordre chronologique que le plan (l'étape 1 du plan = carte 1 ici)
+  const stops = sortChronologically(selection, spinMode);
 
   const [stopStates, setStopStates] = useState<StopState[]>(
     stops.map(() => ({ status: 'pending', xp: 0, error: null, geminiSaw: null })),
@@ -387,7 +376,7 @@ export default function CheckinScreen() {
         {/* Stop cards */}
         <View style={styles.cards}>
           {stops.map((stop, i) => {
-            const cfg    = STOP_CONFIG[i];
+            const cfg    = SLOT_CONFIG[stop.slot];
             const state  = stopStates[i];
             const dist   = distanceTo(stop);
             const isNear = dist !== null && dist <= CHECKIN_RADIUS;

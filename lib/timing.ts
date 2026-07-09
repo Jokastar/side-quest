@@ -50,3 +50,54 @@ export function modeWindow(mode: SpinMode, now = new Date()): { start: Date; end
 export function isModePast(mode: SpinMode, now = new Date()): boolean {
   return now >= modeWindow(mode, now).end;
 }
+
+// ─────────────────────────────────────────────────────────────
+// Ordre chronologique de l'escapade.
+//
+// Les items À HEURE FIXE (concert 20h30) ancrent la timeline.
+// Les items FLEXIBLES (expo, resto, bar — pas d'heure précise)
+// reçoivent une heure par défaut selon leur type et le créneau,
+// pour s'intercaler naturellement : activité → repas → sortie.
+// ─────────────────────────────────────────────────────────────
+
+import { itemTimeToday } from './items';
+import type { Item, Slot } from '../types/database';
+
+// Heure par défaut (en heures décimales) d'un item flexible, par créneau
+export const DEFAULT_STOP_HOURS: Record<SpinMode, Record<Slot, { hour: number; label: string }>> = {
+  midi: {
+    activite: { hour: 10.5, label: '10h30' },
+    table:    { hour: 12,   label: '12h00' },
+    sortie:   { hour: 13.5, label: '13h30' },
+  },
+  journee: {
+    activite: { hour: 15, label: '15h00' },
+    table:    { hour: 17, label: '17h00' },
+    sortie:   { hour: 18.5, label: '18h30' },
+  },
+  soiree: {
+    activite: { hour: 19,   label: '19h00' },
+    table:    { hour: 20.5, label: '20h30' },
+    sortie:   { hour: 22.5, label: '22h30' },
+  },
+};
+
+// Heure d'ancrage d'un item dans la journée (timestamp comparable) :
+// son heure réelle si connue, sinon l'heure par défaut de son type
+export function anchorTime(realTime: Date | null, slot: Slot, mode: SpinMode): number {
+  if (realTime) return realTime.getTime();
+  const base = new Date();
+  const { hour } = DEFAULT_STOP_HOURS[mode][slot];
+  base.setHours(Math.floor(hour), (hour % 1) * 60, 0, 0);
+  return base.getTime();
+}
+
+// Ordonne la sélection en itinéraire chronologique.
+// Utilisé par plan.tsx ET checkin.tsx (l'ordre doit être identique).
+export function sortChronologically(items: Item[], mode: SpinMode): Item[] {
+  return [...items].sort(
+    (a, b) =>
+      anchorTime(itemTimeToday(a), a.slot, mode) -
+      anchorTime(itemTimeToday(b), b.slot, mode),
+  );
+}

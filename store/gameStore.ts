@@ -11,13 +11,11 @@ import type { SpinMode } from '../lib/timing';
 //                 └──────────── resetEscapade (depuis n'importe où)
 //
 //  ONBOARDING  → premier lancement, choix des préférences
-//  HOME        → composer son escapade (3 rangées swipables)
+//  HOME        → composer son escapade (jusqu'à 3 items, tous types)
 //  PLAN        → plan d'escapade : timeline + carte + liens
 //  CHECKIN     → validation sur place + tampons
 //  COMPLETED   → escapade terminée
 //
-// (Les étapes SPINNING/RESULTS ont disparu avec la machine à sous :
-//  la sélection se fait directement sur l'accueil.)
 
 export type AppStage =
   | 'ONBOARDING'
@@ -26,11 +24,8 @@ export type AppStage =
   | 'CHECKIN'
   | 'COMPLETED';
 
-// Index des 3 rangées : 0 = activité, 1 = table, 2 = sortie
-export type ReelIndex = 0 | 1 | 2;
-
-// La sélection d'une rangée : un item (permanent ou éphémère), ou rien
-export type ReelResult = Item | null;
+// Nombre max d'étapes dans une escapade (libre : n'importe quel mix de types)
+export const MAX_SELECTION = 3;
 
 interface LocationCoords {
   latitude: number;
@@ -51,9 +46,11 @@ interface GameState {
   hasOnboarded: boolean | null;
   setHasOnboarded: (done: boolean) => void;
 
-  // ── Sélection des 3 rangées ───────────────────────────────
-  reelResults: [ReelResult, ReelResult, ReelResult];
-  setReelResult: (index: ReelIndex, result: ReelResult) => void;
+  // ── Sélection libre (jusqu'à MAX_SELECTION items, tous types) ──
+  selection: Item[];
+  addToSelection: (item: Item) => void;      // ignoré si plein ou déjà présent
+  removeFromSelection: (id: string) => void;
+  isSelected: (id: string) => boolean;
 
   // Créneau de l'escapade en cours (fixé à la validation) —
   // lu par plan.tsx pour afficher la bonne timeline
@@ -74,7 +71,7 @@ interface GameState {
   resetEscapade: () => void;      // n'importe où → HOME (nouvelle escapade)
 }
 
-export const useGameStore = create<GameState>((set) => ({
+export const useGameStore = create<GameState>((set, get) => ({
   // ── Position GPS ──────────────────────────────────────────
   userLocation: null,
   setUserLocation: (location) => set({ userLocation: location }),
@@ -95,13 +92,17 @@ export const useGameStore = create<GameState>((set) => ({
   setHasOnboarded: (done) => set({ hasOnboarded: done }),
 
   // ── Sélection ─────────────────────────────────────────────
-  reelResults: [null, null, null],
-  setReelResult: (index, result) =>
+  selection: [],
+  addToSelection: (item) =>
     set((state) => {
-      const updated = [...state.reelResults] as [ReelResult, ReelResult, ReelResult];
-      updated[index] = result;
-      return { reelResults: updated };
+      // Refuse les doublons et le dépassement de la limite
+      if (state.selection.length >= MAX_SELECTION) return state;
+      if (state.selection.some(i => i.id === item.id)) return state;
+      return { selection: [...state.selection, item] };
     }),
+  removeFromSelection: (id) =>
+    set((state) => ({ selection: state.selection.filter(i => i.id !== id) })),
+  isSelected: (id) => get().selection.some(i => i.id === id),
 
   spinMode: 'soiree',
   setSpinMode: (mode) => set({ spinMode: mode }),
@@ -135,7 +136,7 @@ export const useGameStore = create<GameState>((set) => ({
   // Réinitialise pour une nouvelle escapade
   resetEscapade: () => set({
     stage: 'HOME',
-    reelResults: [null, null, null],
+    selection: [],
     currentEscapadeId: null,
   }),
 }));
